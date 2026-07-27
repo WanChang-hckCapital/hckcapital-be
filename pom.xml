@@ -102,6 +102,16 @@
 			<artifactId>spring-dotenv</artifactId>
 			<version>4.0.0</version>
 		</dependency>
+
+		<!-- GoogleIdTokenVerifier — verifies the ID token the RN app gets back from Google
+		     Sign-In (see AuthService.loginWithGoogle). Already present transitively via
+		     google-cloud-storage above, but declared explicitly rather than relying on that
+		     incidentally, since a future GCS version bump could drop or change it. -->
+		<dependency>
+			<groupId>com.google.api-client</groupId>
+			<artifactId>google-api-client</artifactId>
+			<version>2.7.2</version>
+		</dependency>
 	</dependencies>
 
 	<build>

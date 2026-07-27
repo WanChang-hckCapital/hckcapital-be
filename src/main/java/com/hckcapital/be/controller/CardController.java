@@ -92,6 +92,58 @@ public class CardController {
         }
     }
 
+    @PostMapping("/{cardId}/delete")
+    public ResponseEntity<?> softDeleteCard(Authentication authentication, @PathVariable String cardId) {
+        try {
+            String memberId = (String) authentication.getPrincipal();
+            cardService.setCardDeleted(memberId, cardId, true);
+            return ResponseEntity.ok().build();
+        } catch (SecurityException e) {
+            return ResponseEntity.status(403).body(Map.of("error", e.getMessage()));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{cardId}/restore")
+    public ResponseEntity<?> restoreCard(Authentication authentication, @PathVariable String cardId) {
+        try {
+            String memberId = (String) authentication.getPrincipal();
+            cardService.setCardDeleted(memberId, cardId, false);
+            return ResponseEntity.ok().build();
+        } catch (SecurityException e) {
+            return ResponseEntity.status(403).body(Map.of("error", e.getMessage()));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{cardId}/publish")
+    public ResponseEntity<?> publishCard(Authentication authentication, @PathVariable String cardId) {
+        try {
+            String memberId = (String) authentication.getPrincipal();
+            cardService.publishCard(memberId, cardId);
+            return ResponseEntity.ok().build();
+        } catch (SecurityException e) {
+            return ResponseEntity.status(403).body(Map.of("error", e.getMessage()));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @DeleteMapping("/{cardId}")
+    public ResponseEntity<?> deleteCardPermanently(Authentication authentication, @PathVariable String cardId) {
+        try {
+            String memberId = (String) authentication.getPrincipal();
+            cardService.deleteCardPermanently(memberId, cardId);
+            return ResponseEntity.ok().build();
+        } catch (SecurityException e) {
+            return ResponseEntity.status(403).body(Map.of("error", e.getMessage()));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
     @GetMapping
     public ResponseEntity<CardPageResponse> getCards(
             @RequestParam(defaultValue = "1") int page,

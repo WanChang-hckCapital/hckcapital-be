@@ -12,9 +12,11 @@ import com.hckcapital.be.dto.SaveCardResponse;
 import com.hckcapital.be.model.Card;
 import com.hckcapital.be.model.Component;
 import com.hckcapital.be.model.Member;
+import com.hckcapital.be.model.Profile;
 import com.hckcapital.be.repository.CardRepository;
 import com.hckcapital.be.repository.ComponentRepository;
 import com.hckcapital.be.repository.MemberRepository;
+import com.hckcapital.be.repository.ProfileRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.bson.Document;
@@ -29,8 +31,12 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Date;
 import java.util.List;
+import java.util.Objects;
 import java.util.UUID;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 
 @Slf4j
 @Service
@@ -41,6 +47,7 @@ public class CardService {
     private final CardRepository cardRepository;
     private final ComponentRepository componentRepository;
     private final MemberRepository memberRepository;
+    private final ProfileRepository profileRepository;
     private final ObjectMapper objectMapper;
 
     public CardPageResponse fetchAllCards(int page, int limit, String profileId) {
@@ -193,6 +200,69 @@ public class CardService {
                 // projection" (error 31254) the moment this branch is actually taken (i.e.
                 // whenever there's no viewer). $literal forces it to be treated as the
                 // constant value it's meant to be.
+                proj.append("isLikedByMe", new Document("$literal", false));
+            }
+            return new Document("$project", proj);
+        };
+
+        Aggregation aggregation = Aggregation.newAggregation(
+                matchCards, sort, skipOp, limitOp,
+                lookupCreator, unwindCreator,
+                lookupLine, unwindLine, lookupFlex, unwindFlex, project
+        );
+        List<CardSummaryResponse> cards = mongoTemplate.aggregate(aggregation, "cards", Document.class)
+                .getMappedResults().stream()
+                .map(this::mapDocument)
+                .collect(java.util.stream.Collectors.toList());
+        return new CardPageResponse(cards, cards.size() == limit);
+    }
+
+    /**
+     * Paginated soft-deleted cards for a single creator — the Recycle Bin screen, mirroring
+     * the Next.js reference project's fetchRecycleBinBubble (lib/actions/user.actions.ts).
+     * Same shape as fetchCardsByCreator just above, with two differences: matches
+     * deleteInfo.isDeleted true instead of ne(true) (the whole point of this query), and
+     * doesn't filter on isReadyToPublish at all — a card can land in the bin whether it was
+     * published or still a draft when deleted, so both should show up here. Unlike the
+     * reference (which scopes via `_id: {$in: profile.cards}`, a separate array kept on the
+     * Profile document), this matches directly on `creator`, consistent with every other
+     * per-creator query in this file (fetchCardsByCreator/countPublishedCards/
+     * countDraftCards) — this port never introduced that parallel Profile.cards array, so
+     * `creator` is the one authoritative source of "whose card is this" throughout.
+     */
+    public CardPageResponse fetchDeletedCardsByCreator(ObjectId creatorId, int page, int limit, String viewerProfileId) {
+        int skip = (page - 1) * limit;
+
+        Criteria criteria = Criteria.where("creator").is(creatorId)
+                .and("deleteInfo.isDeleted").is(true);
+
+        MatchOperation matchCards = Aggregation.match(criteria);
+        SortOperation sort = Aggregation.sort(
+                Sort.by(Sort.Direction.DESC, "createdAt").and(Sort.by(Sort.Direction.DESC, "_id"))
+        );
+        SkipOperation skipOp = Aggregation.skip((long) skip);
+        LimitOperation limitOp = Aggregation.limit(limit);
+        LookupOperation lookupCreator = Aggregation.lookup("profiles", "creator", "_id", "creator");
+        UnwindOperation unwindCreator = Aggregation.unwind("creator");
+        LookupOperation lookupLine = Aggregation.lookup("components", "lineFormatComponent", "_id", "lineComponentData");
+        UnwindOperation unwindLine = Aggregation.unwind("lineComponentData", true);
+        LookupOperation lookupFlex = Aggregation.lookup("components", "flexFormatHtml", "_id", "flexHtmlData");
+        UnwindOperation unwindFlex = Aggregation.unwind("flexHtmlData", true);
+
+        final boolean hasViewer = viewerProfileId != null && ObjectId.isValid(viewerProfileId);
+        AggregationOperation project = ctx -> {
+            Document proj = new Document()
+                    .append("title", 1).append("shareCount", 1).append("comments", 1)
+                    .append("likes", 1).append("cardShareTitle", 1)
+                    .append("creator", new Document().append("_id", 1).append("accountname", 1).append("imageFilePath", 1))
+                    .append("lineComponentData", new Document().append("content", 1))
+                    .append("flexHtmlData", new Document().append("content", 1));
+            if (hasViewer) {
+                proj.append("isLikedByMe", new Document("$in", List.of(
+                        new ObjectId(viewerProfileId),
+                        new Document("$ifNull", List.of("$likes", List.of()))
+                )));
+            } else {
                 proj.append("isLikedByMe", new Document("$literal", false));
             }
             return new Document("$project", proj);
@@ -401,6 +471,7 @@ public class CardService {
             Document proj = new Document()
                     .append("title", 1).append("description", 1)
                     .append("shareCount", 1).append("comments", 1).append("likes", 1).append("cardShareTitle", 1)
+                    .append("isReadyToPublish", 1)
                     .append("creator", new Document().append("_id", 1).append("accountname", 1).append("imageFilePath", 1))
                     .append("lineComponentData", new Document().append("content", 1))
                     .append("flexHtmlData", new Document().append("content", 1))
@@ -475,6 +546,7 @@ public class CardService {
         }
 
         card.setLikedByMe(doc.getBoolean("isLikedByMe", false));
+        card.setReadyToPublish(doc.getBoolean("isReadyToPublish", false));
 
         return card;
     }
@@ -581,7 +653,7 @@ public class CardService {
         card.setStatus("PUBLIC");
         card.setCategories(request.getCategories());
         card.setCardShareTitle(request.getCardShareTitle());
-        card.setIsReadyToPublish(true);
+        card.setIsReadyToPublish(request.getIsReadyToPublish() == null || request.getIsReadyToPublish());
         card.setIsContainingVideo(hasValidVideoOrImageHero(request.getLineComponentsJson()));
         card.setUpdatedAt(LocalDateTime.now());
 
@@ -596,6 +668,124 @@ public class CardService {
         }
 
         return new SaveCardResponse(saved.getId());
+    }
+
+    /**
+     * Soft-delete or restore a card — moves it into (or out of) the Recycle Bin. Mirrors the
+     * Next.js reference project's own updateDeleteCardStatus, unified into one method with a
+     * boolean rather than a string "action" parameter (matching e.g. the RN editor's own
+     * ADD_BUBBLE/MOVE_ELEMENT precedent of "one command, a field picks the variant" instead
+     * of splitting into two near-identical methods). `deletedDate` is set on delete and
+     * cleared entirely on restore (not just nulled) — same as the reference's own $unset —
+     * since a future scheduled purge job would key off "does this field exist" the same way
+     * the reference's own MongoDB TTL index does.
+     *
+     * No-ops (via the query's own deleteInfo.isDeleted match) if the card is already in the
+     * requested state — restoring a card that isn't deleted, or deleting one that already
+     * is, doesn't throw, it just doesn't match any document to update. Authorization: only
+     * the card's own creator or a FLEXADMIN may do either — see authorizeCardMutation.
+     */
+    public void setCardDeleted(String memberId, String cardId, boolean deleted) {
+        if (!ObjectId.isValid(cardId)) {
+            throw new RuntimeException("Invalid cardId");
+        }
+        ObjectId requesterProfileId = resolveActiveProfileId(memberId);
+        Card card = cardRepository.findById(cardId)
+                .orElseThrow(() -> new RuntimeException("Card not found"));
+        authorizeCardMutation(card, requesterProfileId);
+
+        Query query = Query.query(
+                Criteria.where("_id").is(new ObjectId(cardId))
+                        .and("deleteInfo.isDeleted").is(!deleted)
+        );
+        Update update = deleted
+                ? new Update().set("deleteInfo.isDeleted", true).set("deleteInfo.deletedDate", new Date())
+                : new Update().set("deleteInfo.isDeleted", false).unset("deleteInfo.deletedDate");
+        mongoTemplate.updateFirst(query, update, "cards");
+    }
+
+    /** Flips a draft card (isReadyToPublish: false — e.g. one created via the Shortcut
+     * feature) to published. Same creator-or-FLEXADMIN authorization every other card
+     * mutation here uses; CardDetailScreen.tsx's own "Publish" button is gated stricter
+     * (creator only, no admin bypass) purely in the UI, not because the backend forbids it. */
+    public void publishCard(String memberId, String cardId) {
+        if (!ObjectId.isValid(cardId)) {
+            throw new RuntimeException("Invalid cardId");
+        }
+        ObjectId requesterProfileId = resolveActiveProfileId(memberId);
+        Card card = cardRepository.findById(cardId)
+                .orElseThrow(() -> new RuntimeException("Card not found"));
+        authorizeCardMutation(card, requesterProfileId);
+
+        mongoTemplate.updateFirst(
+                Query.query(Criteria.where("_id").is(new ObjectId(cardId))),
+                new Update().set("isReadyToPublish", true),
+                "cards"
+        );
+    }
+
+    /**
+     * Permanently deletes a card — the reference's own deleteCard: removes the card's own
+     * linked Component docs (editor JSON, LINE Flex JSON, rendered HTML) along with the Card
+     * document itself. Unlike setCardDeleted, this has no deleteInfo guard (matching the
+     * reference exactly) — it can hard-delete a card whether or not it was soft-deleted
+     * first, since the Recycle Bin's own "Delete Forever" is just the one place the RN app
+     * actually calls this from. This port never introduced the reference's separate
+     * `Profile.cards` array (see fetchDeletedCardsByCreator's own comment on why), so unlike
+     * the reference's own deleteCard, there's no `$pull` step needed here to keep in sync.
+     */
+    public void deleteCardPermanently(String memberId, String cardId) {
+        if (!ObjectId.isValid(cardId)) {
+            throw new RuntimeException("Invalid cardId");
+        }
+        ObjectId requesterProfileId = resolveActiveProfileId(memberId);
+        Card card = cardRepository.findById(cardId)
+                .orElseThrow(() -> new RuntimeException("Card not found"));
+        authorizeCardMutation(card, requesterProfileId);
+
+        List<ObjectId> componentIds = Stream.of(card.getComponents(), card.getLineFormatComponent(), card.getFlexFormatHtml())
+                .filter(Objects::nonNull)
+                .collect(Collectors.toList());
+        if (!componentIds.isEmpty()) {
+            mongoTemplate.remove(Query.query(Criteria.where("_id").in(componentIds)), "components");
+        }
+
+        // Strip the card out of every Collection.cards array that still references it (e.g.
+        // NAMECARD/CONVERSATION or any user-created collection) — otherwise those collections
+        // would keep a dangling cardId pointing at a document that no longer exists.
+        ObjectId cardObjectId = new ObjectId(cardId);
+        mongoTemplate.updateMulti(
+                Query.query(Criteria.where("cards").is(cardObjectId)),
+                new Update().pull("cards", cardObjectId),
+                "collections"
+        );
+
+        cardRepository.deleteById(cardId);
+    }
+
+    /** Same memberId -> active profile resolution saveCard's own inline logic does — pulled
+     * out here since setCardDeleted/deleteCardPermanently both need the exact same lookup to
+     * authorize their own mutation, and inlining it twice more would just drift eventually.
+     * Public (not just used internally) so ProfileService.createCollection can reuse it too,
+     * rather than duplicating the exact same member-\>active-profile lookup a third time. */
+    public ObjectId resolveActiveProfileId(String memberId) {
+        Member member = memberRepository.findById(memberId)
+                .orElseThrow(() -> new RuntimeException("Member not found"));
+        List<ObjectId> profiles = member.getProfiles();
+        if (profiles == null || profiles.isEmpty() || member.getActiveProfile() >= profiles.size()) {
+            throw new RuntimeException("No active profile for member");
+        }
+        return profiles.get(member.getActiveProfile());
+    }
+
+    /** Only the card's own creator, or a FLEXADMIN, may soft-delete/restore/permanently
+     * delete it — same authorization rule the reference applies identically to both of its
+     * own mutation actions (updateDeleteCardStatus and deleteCard). */
+    private void authorizeCardMutation(Card card, ObjectId requesterProfileId) {
+        if (requesterProfileId.equals(card.getCreator())) return;
+        Profile requester = profileRepository.findById(requesterProfileId.toHexString()).orElse(null);
+        if (requester != null && "FLEXADMIN".equals(requester.getUsertype())) return;
+        throw new SecurityException("You do not have permission to modify this card");
     }
 
     private ObjectId saveComponent(String componentType, String content) {

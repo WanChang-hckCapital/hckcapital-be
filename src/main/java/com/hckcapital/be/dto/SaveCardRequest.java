@@ -32,4 +32,12 @@ public class SaveCardRequest {
     /** Rendered HTML preview. */
     @NotBlank
     private String html;
+
+    /** Null (the default, from the regular card editor's own Save/Publish) means "ready to
+     * publish" — CardService.saveCard treats a missing value as `true`, matching every
+     * existing caller's behavior before this field existed. Explicitly `false` is how the
+     * Shortcut feature (see MetadataController's own doc comment) saves its
+     * auto-generated card as a draft the user can find under the Draft tab and finish
+     * later, rather than immediately publishing something they never reviewed. */
+    private Boolean isReadyToPublish;
 }

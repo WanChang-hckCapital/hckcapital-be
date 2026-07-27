@@ -29,4 +29,10 @@ public class CardSummaryResponse {
     private String creatorImage;
     @JsonProperty("isLikedByMe")
     private boolean isLikedByMe;
+    /** Only populated by fetchCardById (see CardService.mapDocument) — the list endpoints
+     * don't need it and skip the extra $project field. Drives CardDetailScreen.tsx's own
+     * creator-only "Publish" button: a card lands here as a draft (isReadyToPublish: false)
+     * from e.g. the Shortcut feature, and the creator flips it once they're happy with it. */
+    @JsonProperty("isReadyToPublish")
+    private boolean isReadyToPublish;
 }

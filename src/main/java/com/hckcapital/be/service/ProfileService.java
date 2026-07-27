@@ -3,6 +3,7 @@ package com.hckcapital.be.service;
 import com.hckcapital.be.dto.CardPageResponse;
 import com.hckcapital.be.dto.CardSummaryResponse;
 import com.hckcapital.be.dto.CollectionSummaryResponse;
+import com.hckcapital.be.dto.CreateCollectionRequest;
 import com.hckcapital.be.dto.FollowUserResponse;
 import com.hckcapital.be.dto.ProfileResponse;
 import com.hckcapital.be.model.Collection;
@@ -16,6 +17,7 @@ import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
@@ -101,6 +103,93 @@ public class ProfileService {
                 .collect(Collectors.toList());
     }
 
+    /** Creates a new custom (isCustom: true) collection under the caller's own active
+     * profile — same "reject a duplicate name for this creator" rule the old Next.js
+     * reference's addProfileCollections applies before inserting. `memberId` (not a
+     * profileId param) is deliberate: unlike the read-only endpoints above, a mutation needs
+     * to resolve the creator from the authenticated caller itself, the same way
+     * CardService.saveCard does, rather than trusting a client-supplied profileId. */
+    public CollectionSummaryResponse createCollection(String memberId, CreateCollectionRequest request) {
+        ObjectId creatorId = cardService.resolveActiveProfileId(memberId);
+
+        String name = requireName(request);
+        if (collectionRepository.findByCreatorAndName(creatorId, name).isPresent()) {
+            throw new RuntimeException("Tab name already exists.");
+        }
+        Collection.PublicStatus publicStatus = parsePublicStatus(request);
+
+        Collection collection = new Collection();
+        collection.setName(name);
+        collection.setCreator(creatorId);
+        collection.setPublicStatus(publicStatus);
+        collection.setIsCustom(true);
+        collection.setCards(List.of());
+        LocalDateTime now = LocalDateTime.now();
+        collection.setCreatedAt(now);
+        collection.setUpdatedAt(now);
+        Collection saved = collectionRepository.save(collection);
+
+        return new CollectionSummaryResponse(saved.getId(), saved.getName(), saved.getPublicStatus().name(), true, 0);
+    }
+
+    /** Renames a collection and/or flips its public/private status — same ownership check
+     * the old Next.js reference's own updateProfileCollection applies (`_id` + `creator`
+     * must both match), ported here as an explicit SecurityException instead of the
+     * reference's silent "not found" (see CardService.authorizeCardMutation for the same
+     * pattern elsewhere in this port). Deliberately no FLEXADMIN bypass, unlike card
+     * mutations — the reference never extends collection ownership to admins either, and a
+     * profile's own collections aren't the kind of content moderation is meant to reach. */
+    public CollectionSummaryResponse updateCollection(String memberId, String collectionId, CreateCollectionRequest request) {
+        ObjectId creatorId = cardService.resolveActiveProfileId(memberId);
+        Collection collection = collectionRepository.findById(collectionId)
+                .orElseThrow(() -> new RuntimeException("Collection not found"));
+        if (!creatorId.equals(collection.getCreator())) {
+            throw new SecurityException("You do not have permission to modify this collection");
+        }
+
+        String name = requireName(request);
+        collectionRepository.findByCreatorAndName(creatorId, name)
+                .filter(existing -> !existing.getId().equals(collectionId))
+                .ifPresent(existing -> {
+                    throw new RuntimeException("Tab name already exists.");
+                });
+        Collection.PublicStatus publicStatus = parsePublicStatus(request);
+
+        collection.setName(name);
+        collection.setPublicStatus(publicStatus);
+        collection.setUpdatedAt(LocalDateTime.now());
+        Collection saved = collectionRepository.save(collection);
+
+        return new CollectionSummaryResponse(
+                saved.getId(),
+                saved.getName(),
+                saved.getPublicStatus().name(),
+                saved.getIsCustom() != null ? saved.getIsCustom() : true,
+                saved.getCards() != null ? saved.getCards().size() : 0
+        );
+    }
+
+    private static final int COLLECTION_NAME_MAX_LENGTH = 20;
+
+    private String requireName(CreateCollectionRequest request) {
+        String name = request.getName().trim();
+        if (name.isEmpty()) {
+            throw new RuntimeException("Collection name is required");
+        }
+        if (name.length() > COLLECTION_NAME_MAX_LENGTH) {
+            throw new RuntimeException("Collection name must be " + COLLECTION_NAME_MAX_LENGTH + " characters or fewer");
+        }
+        return name;
+    }
+
+    private Collection.PublicStatus parsePublicStatus(CreateCollectionRequest request) {
+        try {
+            return Collection.PublicStatus.valueOf(request.getPublicStatus());
+        } catch (IllegalArgumentException e) {
+            throw new RuntimeException("Invalid publicStatus");
+        }
+    }
+
     public List<CardSummaryResponse> getCollectionCards(String collectionId, String viewerProfileId) {
         Collection collection = collectionRepository.findById(collectionId).orElse(null);
         if (collection == null || collection.getCards() == null || collection.getCards().isEmpty()) {
@@ -115,6 +204,10 @@ public class ProfileService {
 
     public CardPageResponse getDraftCards(String profileId, int page, int limit, String viewerProfileId) {
         return cardService.fetchCardsByCreator(new ObjectId(profileId), false, page, limit, viewerProfileId);
+    }
+
+    public CardPageResponse getRecycleBinCards(String profileId, int page, int limit, String viewerProfileId) {
+        return cardService.fetchDeletedCardsByCreator(new ObjectId(profileId), page, limit, viewerProfileId);
     }
 
     private int countPublishedCards(String profileId) {
