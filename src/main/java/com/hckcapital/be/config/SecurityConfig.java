@@ -23,7 +23,10 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
-                .requestMatchers("/api/v1/auth/**", "/api/v1/health", "/actuator/**").permitAll()
+                // /otp/** has to be reachable pre-signup — there's no JWT yet at that point
+                // (see OtpController, used by SignUpScreen's own OTP step before AuthService.
+                // signup ever creates an account/session).
+                .requestMatchers("/api/v1/auth/**", "/api/v1/otp/**", "/api/v1/health", "/actuator/**").permitAll()
                 .anyRequest().authenticated()
             )
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);

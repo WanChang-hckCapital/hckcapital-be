@@ -103,6 +103,16 @@
 			<version>4.0.0</version>
 		</dependency>
 
+		<!-- Sends the "reset your password" email (see AuthService.forgotPassword) — same AWS
+		     SES setup the old Next.js reference project's own forget-password route used
+		     (@aws-sdk/client-ses), reusing its AWS credentials/from-address rather than
+		     introducing a second email provider. -->
+		<dependency>
+			<groupId>software.amazon.awssdk</groupId>
+			<artifactId>ses</artifactId>
+			<version>2.46.7</version>
+		</dependency>
+
 		<!-- GoogleIdTokenVerifier — verifies the ID token the RN app gets back from Google
 		     Sign-In (see AuthService.loginWithGoogle). Already present transitively via
 		     google-cloud-storage above, but declared explicitly rather than relying on that

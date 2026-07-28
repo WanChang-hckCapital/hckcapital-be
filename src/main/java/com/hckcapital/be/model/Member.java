@@ -2,7 +2,9 @@ package com.hckcapital.be.model;
 
 import lombok.Data;
 import org.bson.types.ObjectId;
+import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.annotation.Id;
+import org.springframework.data.annotation.LastModifiedDate;
 import org.springframework.data.mongodb.core.mapping.Document;
 import org.springframework.data.mongodb.core.mapping.Field;
 
@@ -15,6 +17,14 @@ public class Member {
 
     @Id
     private String id;
+
+    // Mongoose's own {timestamps: true} equivalent (see MongoAuditingConfig) — populated
+    // automatically on insert/update, never set by application code directly.
+    @CreatedDate
+    private LocalDateTime createdAt;
+
+    @LastModifiedDate
+    private LocalDateTime updatedAt;
 
     // ObjectId ref to users collection (NextAuth User)
     private ObjectId user;

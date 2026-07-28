@@ -5,6 +5,7 @@ import com.hckcapital.be.dto.CardSummaryResponse;
 import com.hckcapital.be.dto.CollectionSummaryResponse;
 import com.hckcapital.be.dto.CreateCollectionRequest;
 import com.hckcapital.be.dto.FollowUserResponse;
+import com.hckcapital.be.dto.OnboardRequest;
 import com.hckcapital.be.dto.ProfileResponse;
 import com.hckcapital.be.service.ProfileService;
 import jakarta.validation.Valid;
@@ -26,6 +27,17 @@ public class ProfileController {
     @GetMapping
     public ResponseEntity<ProfileResponse> getProfile(@RequestParam String profileId) {
         return ResponseEntity.ok(profileService.getProfile(profileId));
+    }
+
+    // See AppNavigator.tsx's onboarding gate + OnboardingScreen.tsx on the RN side.
+    @PostMapping("/onboard")
+    public ResponseEntity<?> completeOnboarding(Authentication authentication, @Valid @RequestBody OnboardRequest request) {
+        try {
+            String memberId = (String) authentication.getPrincipal();
+            return ResponseEntity.ok(profileService.completeOnboarding(memberId, request));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
     }
 
     @GetMapping("/followers")

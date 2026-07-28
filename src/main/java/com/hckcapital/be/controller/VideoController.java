@@ -52,8 +52,8 @@ public class VideoController {
                 : directoryPath;
 
         try {
-            String url = imageUploadService.upload(videoFile, path);
-            return ResponseEntity.ok(Map.of("url", url));
+            ImageUploadService.UploadResult result = imageUploadService.upload(videoFile, path);
+            return ResponseEntity.ok(Map.of("url", result.url()));
         } catch (IllegalStateException e) {
             return ResponseEntity.status(503).body(Map.of("error", e.getMessage()));
         } catch (Exception e) {

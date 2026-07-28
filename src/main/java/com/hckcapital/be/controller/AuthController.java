@@ -1,8 +1,10 @@
 package com.hckcapital.be.controller;
 
+import com.hckcapital.be.dto.ForgotPasswordRequest;
 import com.hckcapital.be.dto.GoogleLoginRequest;
 import com.hckcapital.be.dto.LoginRequest;
 import com.hckcapital.be.dto.LoginResponse;
+import com.hckcapital.be.dto.SignUpRequest;
 import com.hckcapital.be.service.AuthService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -35,6 +37,31 @@ public class AuthController {
             return ResponseEntity.ok(response);
         } catch (RuntimeException e) {
             return ResponseEntity.status(401).body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    @PostMapping("/forgot-password")
+    public ResponseEntity<?> forgotPassword(@Valid @RequestBody ForgotPasswordRequest request) {
+        try {
+            // Same generic response whether or not that email actually has an account (see
+            // AuthService.forgotPassword's own doc comment) — deliberately doesn't say
+            // "sent" outright, so this response itself can't be used to enumerate emails.
+            authService.forgotPassword(request.getEmail(), request.getLang());
+            return ResponseEntity.ok(Map.of("success", true, "message", "If an account exists for this email, a reset link has been sent."));
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(400).body(Map.of("success", false, "message", e.getMessage()));
+        }
+    }
+
+    // Requires OtpController's own POST /api/v1/otp/verify to have already succeeded for
+    // this email — see AuthService.signup's own doc comment and OtpService.requireVerified.
+    @PostMapping("/signup")
+    public ResponseEntity<?> signup(@Valid @RequestBody SignUpRequest request) {
+        try {
+            LoginResponse response = authService.signup(request.getEmail(), request.getUsername(), request.getPassword());
+            return ResponseEntity.ok(response);
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(400).body(Map.of("error", e.getMessage()));
         }
     }
 }

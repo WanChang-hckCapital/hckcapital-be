@@ -113,7 +113,16 @@ public class ImageUploadService {
         return GoogleCredentials.fromStream(new ByteArrayInputStream(json.getBytes(StandardCharsets.UTF_8)));
     }
 
-    public String upload(MultipartFile file, String directoryPath) throws IOException {
+    /** `path` is relative to the RN app's own GCS_IMAGE_BASE_URL (config/api.ts), which
+     * already bakes in the "{projectEnvironment}/" prefix — i.e. `path` is exactly what
+     * belongs in a Profile/Card's own imageFilePath-style field, gcsImageUrl(path) round
+     * -trips back to the same `url` returned alongside it. Most callers (AddImageModal.tsx
+     * via ImageController) only ever use `url` directly since card elements store full
+     * URLs; OnboardingScreen.tsx is the one that needs `path`, since Profile.imageFilePath
+     * is stored relative like every other profile's. */
+    public record UploadResult(String url, String path) {}
+
+    public UploadResult upload(MultipartFile file, String directoryPath) throws IOException {
         if (bucketName == null || bucketName.isBlank()) {
             throw new IllegalStateException("Image upload is not configured (bucket name is unset)");
         }
@@ -123,7 +132,8 @@ public class ImageUploadService {
         // bucket — the RN app's own gcsImageUrl() helper (config/api.ts) already assumes
         // this "staging/..." prefix for other images in this bucket.
         String prefix = (projectEnvironment == null || projectEnvironment.isBlank()) ? "" : projectEnvironment + "/";
-        String objectName = prefix + directoryPath + "/" + UUID.randomUUID() + extensionFor(file);
+        String relativePath = directoryPath + "/" + UUID.randomUUID() + extensionFor(file);
+        String objectName = prefix + relativePath;
         BlobId blobId = BlobId.of(bucketName, objectName);
         BlobInfo blobInfo = BlobInfo.newBuilder(blobId)
                 .setContentType(file.getContentType() != null ? file.getContentType() : "image/jpeg")
@@ -131,7 +141,8 @@ public class ImageUploadService {
 
         storage().create(blobInfo, file.getBytes());
 
-        return "https://storage.googleapis.com/" + bucketName + "/" + objectName;
+        String url = "https://storage.googleapis.com/" + bucketName + "/" + objectName;
+        return new UploadResult(url, relativePath);
     }
 
     /** Extension is derived from the uploaded file itself, never trusted client input used

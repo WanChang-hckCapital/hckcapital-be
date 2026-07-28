@@ -35,8 +35,8 @@ public class ImageController {
                 : directoryPath;
 
         try {
-            String url = imageUploadService.upload(imageFile, path);
-            return ResponseEntity.ok(Map.of("url", url));
+            ImageUploadService.UploadResult result = imageUploadService.upload(imageFile, path);
+            return ResponseEntity.ok(Map.of("url", result.url(), "path", result.path()));
         } catch (IllegalStateException e) {
             return ResponseEntity.status(503).body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
