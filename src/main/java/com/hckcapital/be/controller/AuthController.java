@@ -9,6 +9,7 @@ import com.hckcapital.be.service.AuthService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.Map;
@@ -51,6 +52,13 @@ public class AuthController {
         } catch (RuntimeException e) {
             return ResponseEntity.status(400).body(Map.of("success", false, "message", e.getMessage()));
         }
+    }
+
+    // See AuthService.hasPassword — Settings > Forget Password's own gate for OAuth-only accounts.
+    @GetMapping("/password-status")
+    public ResponseEntity<?> getPasswordStatus(Authentication authentication) {
+        String memberId = (String) authentication.getPrincipal();
+        return ResponseEntity.ok(Map.of("hasPassword", authService.hasPassword(memberId)));
     }
 
     // Requires OtpController's own POST /api/v1/otp/verify to have already succeeded for

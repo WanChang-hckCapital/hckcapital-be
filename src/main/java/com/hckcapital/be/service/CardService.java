@@ -10,6 +10,7 @@ import com.hckcapital.be.dto.FollowUserResponse;
 import com.hckcapital.be.dto.SaveCardRequest;
 import com.hckcapital.be.dto.SaveCardResponse;
 import com.hckcapital.be.model.Card;
+import com.hckcapital.be.model.CardView;
 import com.hckcapital.be.model.Component;
 import com.hckcapital.be.model.Member;
 import com.hckcapital.be.model.Profile;
@@ -155,8 +156,21 @@ public class CardService {
         return new CardPageResponse(cards, cards.size() == limit);
     }
 
-    /** Paginated published or draft cards for a single creator. */
+    /** Paginated published or draft cards for a single creator, with no date filtering —
+     * see the overload below for Settings > Report's own "Content" tab / period dropdown. */
     public CardPageResponse fetchCardsByCreator(ObjectId creatorId, boolean published, int page, int limit, String viewerProfileId) {
+        return fetchCardsByCreator(creatorId, published, page, limit, viewerProfileId, null, null);
+    }
+
+    /** Same as the no-date overload above, plus an optional `createdAt` range — either
+     * bound may be null to leave that side open. Used by Settings > Report's own period
+     * dropdown (see ProfileController.getPublishedCards's own startDate/endDate params) to
+     * scope the "Content" tab's card list to a selected window; every other caller just
+     * uses the no-date overload, which passes null/null through here unfiltered. */
+    public CardPageResponse fetchCardsByCreator(
+            ObjectId creatorId, boolean published, int page, int limit, String viewerProfileId,
+            LocalDateTime startDate, LocalDateTime endDate
+    ) {
         int skip = (page - 1) * limit;
 
         Criteria criteria = Criteria.where("deleteInfo.isDeleted").ne(true);
@@ -164,6 +178,16 @@ public class CardService {
             criteria.and("creator").is(creatorId).and("isReadyToPublish").is(true);
         } else {
             criteria.and("creator").is(creatorId).and("isReadyToPublish").ne(true);
+        }
+        // A single `.and("createdAt")` call, not two — Spring Data's Criteria throws
+        // InvalidMongoDbApiUsageException ("can't add a second '$and' expression for the
+        // same field") if the same field is `.and(...)`'d more than once on one Criteria.
+        if (startDate != null && endDate != null) {
+            criteria.and("createdAt").gte(startDate).lte(endDate);
+        } else if (startDate != null) {
+            criteria.and("createdAt").gte(startDate);
+        } else if (endDate != null) {
+            criteria.and("createdAt").lte(endDate);
         }
 
         MatchOperation matchCards = Aggregation.match(criteria);
@@ -595,6 +619,55 @@ public class CardService {
         int likeCount = likesObj instanceof List ? ((List<?>) likesObj).size() : 0;
 
         return new CardLikeToggleResponse(!alreadyLiked, likeCount);
+    }
+
+    /** Records a card view in the CardView collection — see CardView's own doc comment for
+     * why this isn't stored on Card.viewDetails (an unbounded embedded array, and one that
+     * was never even kept in sync with Card.totalViews). Skips self-views (the creator
+     * viewing their own card) and dedups repeat views from the same viewer within a
+     * 3-minute window, mirroring recordProfileView / the Next.js reference's own
+     * updateCardViewDate. */
+    public void recordCardView(String cardId, String viewerProfileId) {
+        if (cardId == null || viewerProfileId == null || !ObjectId.isValid(cardId)) {
+            return;
+        }
+
+        Document card = mongoTemplate.findOne(
+                Query.query(Criteria.where("_id").is(new ObjectId(cardId))),
+                Document.class, "cards"
+        );
+        if (card == null) {
+            return;
+        }
+        Object creator = card.get("creator");
+        if (creator != null && creator.toString().equals(viewerProfileId)) {
+            return;
+        }
+
+        ObjectId cardObjectId = new ObjectId(cardId);
+        ObjectId viewerObjectId = new ObjectId(viewerProfileId);
+        Date now = new Date();
+        Date threeMinutesAgo = new Date(now.getTime() - 3 * 60 * 1000);
+
+        Criteria recentCriteria = Criteria.where("cardId").is(cardObjectId)
+                .and("viewerId").is(viewerObjectId)
+                .and("viewedAt").gt(threeMinutesAgo);
+        boolean recentView = mongoTemplate.exists(Query.query(recentCriteria), CardView.class);
+        if (recentView) {
+            return;
+        }
+
+        CardView view = new CardView();
+        view.setCardId(cardObjectId);
+        view.setViewerId(viewerObjectId);
+        view.setViewedAt(now);
+        mongoTemplate.insert(view);
+
+        mongoTemplate.updateFirst(
+                Query.query(Criteria.where("_id").is(cardObjectId)),
+                new Update().inc("totalViews", 1),
+                Card.class
+        );
     }
 
     /**

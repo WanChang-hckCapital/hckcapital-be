@@ -23,6 +23,12 @@ public class SecurityConfig {
             .csrf(AbstractHttpConfigurer::disable)
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
+                // Narrower match evaluated first: unlike the rest of /api/v1/auth/** (which
+                // has to stay reachable pre-login — see below), this one needs a real JWT
+                // (Settings > Forget Password's own gate, see AuthController.getPasswordStatus).
+                // Without this override the broader permitAll below would let an
+                // unauthenticated request reach the controller with a null Authentication.
+                .requestMatchers("/api/v1/auth/password-status").authenticated()
                 // /otp/** has to be reachable pre-signup — there's no JWT yet at that point
                 // (see OtpController, used by SignUpScreen's own OTP step before AuthService.
                 // signup ever creates an account/session).

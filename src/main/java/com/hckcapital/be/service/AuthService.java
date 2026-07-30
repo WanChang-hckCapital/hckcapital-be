@@ -240,6 +240,16 @@ public class AuthService {
      * caller whether that email has an account, which would let anyone probe arbitrary
      * addresses to find out which ones are registered (this used to throw "Fail to find
      * member", a direct user-enumeration bug). */
+    /** Settings > Forget Password's own gate — mirrors the old Next.js reference project's
+     * own getMemberInfo's `hasPassword` field: false for an OAuth-only account (e.g. signed
+     * up via Google, never set a password), in which case that screen shows an "sign in with
+     * your original provider instead" notice rather than a password-reset button. */
+    public boolean hasPassword(String memberId) {
+        Member member = memberRepository.findById(memberId)
+                .orElseThrow(() -> new RuntimeException("Member not found"));
+        return member.getPassword() != null && !member.getPassword().isBlank();
+    }
+
     public void forgotPassword(String email, String lang) {
         Member member = memberRepository.findByEmail(email).orElse(null);
         if (member == null) return;

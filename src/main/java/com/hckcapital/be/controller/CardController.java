@@ -54,6 +54,18 @@ public class CardController {
         return ResponseEntity.ok(cardService.toggleLike(new ObjectId(cardId), new ObjectId(profileId)));
     }
 
+    // See CardService.recordCardView — called from CardDetailScreen.tsx when opening a
+    // card. viewerProfileId is the caller's own active profile; no-ops server-side on a
+    // self-view (the creator viewing their own card) or missing viewer id.
+    @PostMapping("/{cardId}/view")
+    public ResponseEntity<Void> recordCardView(
+            @PathVariable String cardId,
+            @RequestParam(required = false) String viewerProfileId
+    ) {
+        cardService.recordCardView(cardId, viewerProfileId);
+        return ResponseEntity.noContent().build();
+    }
+
     @GetMapping("/{cardId}/comments")
     public ResponseEntity<List<CardCommentResponse>> getComments(
             @PathVariable String cardId,
