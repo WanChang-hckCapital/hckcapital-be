@@ -16,4 +16,11 @@ public class Subscription {
     private String status;
 
     private LocalDateTime estimatedEndDate;
+
+    // Used by AdminService's weekly/monthly revenue stats — mirrors the Mongoose
+    // reference's own subscriptionSchema (planStarted/totalAmount), not previously ported
+    // since nothing on this side needed them until now.
+    private LocalDateTime planStarted;
+
+    private double totalAmount;
 }

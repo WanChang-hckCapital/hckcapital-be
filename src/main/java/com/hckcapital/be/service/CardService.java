@@ -6,6 +6,7 @@ import com.hckcapital.be.dto.CardCategoryCountResponse;
 import com.hckcapital.be.dto.CardLikeToggleResponse;
 import com.hckcapital.be.dto.CardPageResponse;
 import com.hckcapital.be.dto.CardSummaryResponse;
+import com.hckcapital.be.dto.CardViewCountryResponse;
 import com.hckcapital.be.dto.FollowUserResponse;
 import com.hckcapital.be.dto.SaveCardRequest;
 import com.hckcapital.be.dto.SaveCardResponse;
@@ -33,8 +34,12 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.UUID;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -207,7 +212,7 @@ public class CardService {
         AggregationOperation project = ctx -> {
             Document proj = new Document()
                     .append("title", 1).append("shareCount", 1).append("comments", 1)
-                    .append("likes", 1).append("cardShareTitle", 1)
+                    .append("likes", 1).append("cardShareTitle", 1).append("totalViews", 1).append("createdAt", 1)
                     .append("creator", new Document().append("_id", 1).append("accountname", 1).append("imageFilePath", 1))
                     .append("lineComponentData", new Document().append("content", 1))
                     .append("flexHtmlData", new Document().append("content", 1));
@@ -238,7 +243,44 @@ public class CardService {
                 .getMappedResults().stream()
                 .map(this::mapDocument)
                 .collect(java.util.stream.Collectors.toList());
+        populateSaveCounts(cards);
         return new CardPageResponse(cards, cards.size() == limit);
+    }
+
+    /** "Saves" (PostInsightsScreen's own 儲存 stat) means "does this card belong to one of
+     * my Collections" — i.e. how many distinct profiles have this card in at least one of
+     * their own Collection.cards arrays (see Collection.java; NAMECARD/CONVERSATION or any
+     * custom collection all count). One batched query for every card on the page rather
+     * than one query per card — same reasoning as the rest of this method's own
+     * likes/comments handling: a personal card list is small enough that a single lookup
+     * plus in-memory grouping is simpler than an aggregation-pipeline $lookup/$group. A
+     * profile that saved the same card into two of its own collections still only counts
+     * once, same as a "like" can't be double-counted from one profile. */
+    private void populateSaveCounts(List<CardSummaryResponse> cards) {
+        if (cards.isEmpty()) return;
+        List<ObjectId> cardIds = cards.stream().map(c -> new ObjectId(c.getCardId())).collect(Collectors.toList());
+        List<Document> collections = mongoTemplate.find(
+                Query.query(Criteria.where("cards").in(cardIds)),
+                Document.class, "collections"
+        );
+
+        Map<ObjectId, Set<ObjectId>> saversByCardId = new HashMap<>();
+        for (Document collection : collections) {
+            Object creatorObj = collection.get("creator");
+            if (!(creatorObj instanceof ObjectId creator)) continue;
+            Object cardsObj = collection.get("cards");
+            if (!(cardsObj instanceof List<?> collectionCardIds)) continue;
+            for (Object cardIdObj : collectionCardIds) {
+                if (cardIdObj instanceof ObjectId cardId) {
+                    saversByCardId.computeIfAbsent(cardId, k -> new HashSet<>()).add(creator);
+                }
+            }
+        }
+
+        for (CardSummaryResponse card : cards) {
+            Set<ObjectId> savers = saversByCardId.get(new ObjectId(card.getCardId()));
+            card.setSaves(savers != null ? savers.size() : 0);
+        }
     }
 
     /**
@@ -540,6 +582,12 @@ public class CardService {
         Object commentsObj = doc.get("comments");
         card.setComments(commentsObj instanceof List ? ((List<?>) commentsObj).size() : 0);
 
+        card.setViews(doc.getInteger("totalViews", 0));
+        card.setCreatedAt(doc.getDate("createdAt"));
+        // `saves` isn't set here — it needs a cross-collection lookup (which profiles have
+        // this card in one of their own Collections), not anything on the Card document
+        // itself. See fetchCardsByCreator's own post-processing step, populateSaveCounts.
+
         Object shareTitles = doc.get("cardShareTitle");
         if (shareTitles instanceof List<?> list && !list.isEmpty()) {
             card.setCardShareTitle(list.get(0).toString());
@@ -668,6 +716,57 @@ public class CardService {
                 new Update().inc("totalViews", 1),
                 Card.class
         );
+    }
+
+    /** Powers PostInsightsScreen's "國家地區" (country/region) breakdown — what share of a
+     * card's distinct viewers come from each country, sorted by count descending.
+     *
+     * Profile itself doesn't store a country — that lives on Member (see
+     * AccountDetailsResponse). So this reverse-looks-up each distinct viewer's owning
+     * Member via `profiles $in viewerIds` (a Member's `profiles` array contains every
+     * profile it owns) and reads that Member's own `country`. Viewers whose Member has no
+     * country set land in an "Unknown" bucket rather than being dropped from the total —
+     * same honesty principle as everywhere else in this Report screen: no fabricated data,
+     * but also no silently-incomplete percentages. */
+    public List<CardViewCountryResponse> getCardViewCountryBreakdown(String cardId) {
+        if (!ObjectId.isValid(cardId)) {
+            return List.of();
+        }
+        List<ObjectId> viewerIds = mongoTemplate.findDistinct(
+                Query.query(Criteria.where("cardId").is(new ObjectId(cardId))),
+                "viewerId", "cardviews", ObjectId.class
+        );
+        if (viewerIds.isEmpty()) {
+            return List.of();
+        }
+
+        List<Member> members = mongoTemplate.find(
+                Query.query(Criteria.where("profiles").in(viewerIds)),
+                Member.class
+        );
+
+        Map<ObjectId, String> countryByViewerId = new HashMap<>();
+        for (Member member : members) {
+            if (member.getProfiles() == null) continue;
+            for (ObjectId profileId : member.getProfiles()) {
+                if (viewerIds.contains(profileId)) {
+                    countryByViewerId.put(profileId, member.getCountry());
+                }
+            }
+        }
+
+        Map<String, Integer> countsByCountry = new HashMap<>();
+        for (ObjectId viewerId : viewerIds) {
+            String country = countryByViewerId.get(viewerId);
+            String key = (country == null || country.isBlank()) ? "Unknown" : country;
+            countsByCountry.merge(key, 1, Integer::sum);
+        }
+
+        int total = viewerIds.size();
+        return countsByCountry.entrySet().stream()
+                .map(e -> new CardViewCountryResponse(e.getKey(), e.getValue(), Math.round((e.getValue() * 1000.0) / total) / 10.0))
+                .sorted((a, b) -> Integer.compare(b.getCount(), a.getCount()))
+                .collect(Collectors.toList());
     }
 
     /**

@@ -122,6 +122,19 @@
 			<artifactId>google-api-client</artifactId>
 			<version>2.7.2</version>
 		</dependency>
+
+		<!-- Dashboard > Product/Promotion (see StripeService) — same Stripe account the old
+		     Next.js reference project's own lib/actions/stripe.actions.ts already talks to.
+		     Official first-party SDK rather than hand-rolled REST calls (unlike
+		     RewardfulService/MetadataService, which have no first-party Java SDK to reach
+		     for) — Stripe's API surface (products/prices/promotion codes/coupons, nested
+		     "expand" params, pagination) is large enough that the SDK's typed request
+		     builders are worth the dependency. -->
+		<dependency>
+			<groupId>com.stripe</groupId>
+			<artifactId>stripe-java</artifactId>
+			<version>29.4.0</version>
+		</dependency>
 	</dependencies>
 
 	<build>

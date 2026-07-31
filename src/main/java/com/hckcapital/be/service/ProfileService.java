@@ -11,11 +11,13 @@ import com.hckcapital.be.dto.OnboardRequest;
 import com.hckcapital.be.dto.OnboardResponse;
 import com.hckcapital.be.dto.PreferencesResponse;
 import com.hckcapital.be.dto.ProfileResponse;
+import com.hckcapital.be.dto.DailySeriesPointResponse;
 import com.hckcapital.be.dto.ReportOverviewResponse;
 import com.hckcapital.be.dto.UpdateNotificationSettingsRequest;
 import com.hckcapital.be.dto.UpdatePreferencesRequest;
 import com.hckcapital.be.dto.UpdateProfileDetailsRequest;
 import com.hckcapital.be.model.Card;
+import com.hckcapital.be.model.CardView;
 import com.hckcapital.be.model.Collection;
 import com.hckcapital.be.model.Member;
 import com.hckcapital.be.model.Profile;
@@ -25,18 +27,28 @@ import com.hckcapital.be.repository.MemberRepository;
 import com.hckcapital.be.repository.ProfileRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.bson.Document;
 import org.bson.types.ObjectId;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.mongodb.core.MongoTemplate;
+import org.springframework.data.mongodb.core.aggregation.Aggregation;
+import org.springframework.data.mongodb.core.aggregation.AggregationOperation;
 import org.springframework.data.mongodb.core.query.Criteria;
 import org.springframework.data.mongodb.core.query.Query;
 import org.springframework.data.mongodb.core.query.Update;
 import org.springframework.stereotype.Service;
 
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.LocalTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
+import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -622,22 +634,167 @@ public class ProfileService {
         int totalLikes = ownCards.stream().mapToInt(c -> c.getLikes() != null ? c.getLikes().size() : 0).sum();
         int totalComments = ownCards.stream().mapToInt(c -> c.getComments() != null ? c.getComments().size() : 0).sum();
 
-        // Indexed range query against the ProfileView collection (see recordProfileView) —
-        // replaces the old in-memory filter over Profile.viewDetails now that views are no
-        // longer stored as an embedded array on the Profile document itself.
-        Criteria viewsCriteria = Criteria.where("profileId").is(profileId);
+        // Card ids fetched unscoped by date — card views are scoped by CardView's own
+        // `viewedAt` (see countCardViews below), not by when the card itself was created.
+        List<ObjectId> ownCardIds = mongoTemplate.findDistinct(
+                Query.query(Criteria.where("creator").is(profileId).and("deleteInfo.isDeleted").ne(true)),
+                "_id", Card.class, ObjectId.class
+        );
+        int profileViewsCount = countProfileViews(profileId, startDate, endDate);
+        int cardViewsCount = countCardViews(ownCardIds, startDate, endDate);
+
+        // Previous-period comparison (powers the Report screen's progress bars) — only
+        // meaningful for a concrete, bounded period, so this is skipped (all zero) unless
+        // both bounds are given. Mirrors the exact same number of days immediately before
+        // the current period — e.g. selecting "last 7 days" compares against the 7 days
+        // before that, a custom 10-day range compares against the 10 days before it.
+        int previousCardCount = 0;
+        int previousDraftCount = 0;
+        int previousProfileViewsCount = 0;
+        int previousCardViewsCount = 0;
         if (startDate != null && endDate != null) {
-            viewsCriteria.and("viewedAt")
+            long periodDays = ChronoUnit.DAYS.between(startDate.toLocalDate(), endDate.toLocalDate()) + 1;
+            LocalDateTime previousEnd = startDate.toLocalDate().minusDays(1).atTime(LocalTime.MAX);
+            LocalDateTime previousStart = previousEnd.toLocalDate().minusDays(periodDays - 1).atStartOfDay();
+
+            previousCardCount = countPublishedCards(profile.getId(), previousStart, previousEnd);
+            previousDraftCount = countDraftCards(profile.getId(), previousStart, previousEnd);
+            previousProfileViewsCount = countProfileViews(profileId, previousStart, previousEnd);
+            previousCardViewsCount = countCardViews(ownCardIds, previousStart, previousEnd);
+        }
+
+        return new ReportOverviewResponse(
+                cardCount, draftCount, followersCount, followingCount, totalLikes, totalComments,
+                profileViewsCount, cardViewsCount,
+                previousCardCount, previousDraftCount, previousProfileViewsCount, previousCardViewsCount
+        );
+    }
+
+    /** Indexed range query against the ProfileView collection (see recordProfileView) —
+     * replaces the old in-memory filter over Profile.viewDetails now that views are no
+     * longer stored as an embedded array on the Profile document itself. */
+    private int countProfileViews(ObjectId profileId, LocalDateTime startDate, LocalDateTime endDate) {
+        Criteria criteria = Criteria.where("profileId").is(profileId);
+        if (startDate != null && endDate != null) {
+            criteria.and("viewedAt")
                     .gte(Date.from(startDate.atZone(ZoneId.systemDefault()).toInstant()))
                     .lte(Date.from(endDate.atZone(ZoneId.systemDefault()).toInstant()));
         } else if (startDate != null) {
-            viewsCriteria.and("viewedAt").gte(Date.from(startDate.atZone(ZoneId.systemDefault()).toInstant()));
+            criteria.and("viewedAt").gte(Date.from(startDate.atZone(ZoneId.systemDefault()).toInstant()));
         } else if (endDate != null) {
-            viewsCriteria.and("viewedAt").lte(Date.from(endDate.atZone(ZoneId.systemDefault()).toInstant()));
+            criteria.and("viewedAt").lte(Date.from(endDate.atZone(ZoneId.systemDefault()).toInstant()));
         }
-        int profileViewsCount = (int) mongoTemplate.count(Query.query(viewsCriteria), ProfileView.class);
+        return (int) mongoTemplate.count(Query.query(criteria), ProfileView.class);
+    }
 
-        return new ReportOverviewResponse(cardCount, draftCount, followersCount, followingCount, totalLikes, totalComments, profileViewsCount);
+    /** Same idea as countProfileViews, scoped to a fixed set of card ids instead of a
+     * single profile. */
+    private int countCardViews(List<ObjectId> cardIds, LocalDateTime startDate, LocalDateTime endDate) {
+        if (cardIds.isEmpty()) return 0;
+        Criteria criteria = Criteria.where("cardId").in(cardIds);
+        if (startDate != null && endDate != null) {
+            criteria.and("viewedAt")
+                    .gte(Date.from(startDate.atZone(ZoneId.systemDefault()).toInstant()))
+                    .lte(Date.from(endDate.atZone(ZoneId.systemDefault()).toInstant()));
+        } else if (startDate != null) {
+            criteria.and("viewedAt").gte(Date.from(startDate.atZone(ZoneId.systemDefault()).toInstant()));
+        } else if (endDate != null) {
+            criteria.and("viewedAt").lte(Date.from(endDate.atZone(ZoneId.systemDefault()).toInstant()));
+        }
+        return (int) mongoTemplate.count(Query.query(criteria), CardView.class);
+    }
+
+    /** Powers the Report screen's line graph — one point per day in [startDate, endDate]
+     * (inclusive), 0-filled for days with no views. Both bounds are required: unlike
+     * getReportOverview's all-time fallback, a graph has no meaningful "unbounded" axis. */
+    public List<DailySeriesPointResponse> getProfileViewsSeries(
+            String memberId, LocalDateTime startDate, LocalDateTime endDate
+    ) {
+        if (startDate == null || endDate == null) {
+            throw new IllegalArgumentException("startDate and endDate are required");
+        }
+        ObjectId profileId = cardService.resolveActiveProfileId(memberId);
+        Date startD = Date.from(startDate.atZone(ZoneId.systemDefault()).toInstant());
+        Date endD = Date.from(endDate.atZone(ZoneId.systemDefault()).toInstant());
+
+        AggregationOperation match = ctx -> new Document("$match", new Document("profileId", profileId)
+                .append("viewedAt", new Document("$gte", startD).append("$lte", endD)));
+        String zoneId = ZoneId.systemDefault().getId();
+        AggregationOperation group = ctx -> new Document("$group", new Document("_id",
+                new Document("$dateToString", new Document("format", "%Y-%m-%d")
+                        .append("date", "$viewedAt")
+                        .append("timezone", zoneId)))
+                .append("count", new Document("$sum", 1)));
+
+        Aggregation aggregation = Aggregation.newAggregation(match, group);
+        List<Document> results = mongoTemplate.aggregate(aggregation, "profileviews", Document.class).getMappedResults();
+
+        Map<String, Integer> countsByDay = new HashMap<>();
+        for (Document doc : results) {
+            countsByDay.put(doc.getString("_id"), doc.getInteger("count"));
+        }
+
+        List<DailySeriesPointResponse> series = new ArrayList<>();
+        LocalDate cursor = startDate.toLocalDate();
+        LocalDate end = endDate.toLocalDate();
+        while (!cursor.isAfter(end)) {
+            String key = cursor.format(DateTimeFormatter.ISO_LOCAL_DATE);
+            series.add(new DailySeriesPointResponse(key, countsByDay.getOrDefault(key, 0)));
+            cursor = cursor.plusDays(1);
+        }
+        return series;
+    }
+
+    /** Powers the Report screen's followers line graph — one point per day in
+     * [startDate, endDate], each the *cumulative* follower total as of that day (not new
+     * followers that day, unlike getProfileViewsSeries). Both bounds required, same as
+     * getProfileViewsSeries.
+     *
+     * Caveat: this is built from Profile.Follower's own `followedAt`, but Follower entries
+     * are removed outright on unfollow — there's no `unfollowedAt` kept anywhere in this
+     * schema. So this is really "days since each *currently still following* follower
+     * joined," not a true historical total; anyone who has since unfollowed disappears
+     * from every day's count, including days they were actually a follower. Short of
+     * adding an unfollow-event log (mirroring ProfileView/CardView), that's not
+     * reconstructable from what's stored today. */
+    public List<DailySeriesPointResponse> getFollowersSeries(String memberId, LocalDateTime startDate, LocalDateTime endDate) {
+        if (startDate == null || endDate == null) {
+            throw new IllegalArgumentException("startDate and endDate are required");
+        }
+        ObjectId profileId = cardService.resolveActiveProfileId(memberId);
+        Profile profile = profileRepository.findById(profileId.toHexString())
+                .orElseThrow(() -> new RuntimeException("Profile not found"));
+
+        ZoneId zone = ZoneId.systemDefault();
+        List<LocalDate> followedDates = profile.getFollowers() == null ? List.of() : profile.getFollowers().stream()
+                .map(Profile.Follower::getFollowedAt)
+                .filter(Objects::nonNull)
+                .map(d -> d.toInstant().atZone(zone).toLocalDate())
+                .sorted()
+                .collect(Collectors.toList());
+
+        LocalDate cursor = startDate.toLocalDate();
+        LocalDate end = endDate.toLocalDate();
+        int idx = 0;
+        int cumulative = 0;
+        // Seed the running total with every follow that happened before the visible range
+        // even starts, so the first plotted point is the real total on that day, not just
+        // "new follows since the range began."
+        while (idx < followedDates.size() && followedDates.get(idx).isBefore(cursor)) {
+            idx++;
+            cumulative++;
+        }
+
+        List<DailySeriesPointResponse> series = new ArrayList<>();
+        while (!cursor.isAfter(end)) {
+            while (idx < followedDates.size() && !followedDates.get(idx).isAfter(cursor)) {
+                idx++;
+                cumulative++;
+            }
+            series.add(new DailySeriesPointResponse(cursor.format(DateTimeFormatter.ISO_LOCAL_DATE), cumulative));
+            cursor = cursor.plusDays(1);
+        }
+        return series;
     }
 
     /** Ported from the old Next.js reference's updateProfileViewData — records that

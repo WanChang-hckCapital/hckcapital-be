@@ -8,6 +8,7 @@ import com.hckcapital.be.dto.CreateCollectionRequest;
 import com.hckcapital.be.dto.FollowUserResponse;
 import com.hckcapital.be.dto.OnboardRequest;
 import com.hckcapital.be.dto.ProfileResponse;
+import com.hckcapital.be.dto.DailySeriesPointResponse;
 import com.hckcapital.be.dto.ReportOverviewResponse;
 import com.hckcapital.be.dto.UpdateAccountTypeRequest;
 import com.hckcapital.be.dto.UpdateNotificationSettingsRequest;
@@ -94,6 +95,43 @@ public class ProfileController {
     ) {
         String memberId = (String) authentication.getPrincipal();
         return ResponseEntity.ok(profileService.getReportOverview(memberId, parseStartOfDay(startDate), parseEndOfDay(endDate)));
+    }
+
+    // See ProfileService.getProfileViewsSeries — the line graph below the Report screen's
+    // stat cards. Unlike /report/overview, both bounds are required (a graph has no
+    // meaningful unbounded axis).
+    @GetMapping("/report/profile-views-series")
+    public ResponseEntity<?> getProfileViewsSeries(
+            Authentication authentication,
+            @RequestParam String startDate,
+            @RequestParam String endDate
+    ) {
+        try {
+            String memberId = (String) authentication.getPrincipal();
+            List<DailySeriesPointResponse> series =
+                    profileService.getProfileViewsSeries(memberId, parseStartOfDay(startDate), parseEndOfDay(endDate));
+            return ResponseEntity.ok(series);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    // See ProfileService.getFollowersSeries — the Report screen's followers line graph
+    // (cumulative total per day, not new-followers-per-day like profile-views-series).
+    @GetMapping("/report/followers-series")
+    public ResponseEntity<?> getFollowersSeries(
+            Authentication authentication,
+            @RequestParam String startDate,
+            @RequestParam String endDate
+    ) {
+        try {
+            String memberId = (String) authentication.getPrincipal();
+            List<DailySeriesPointResponse> series =
+                    profileService.getFollowersSeries(memberId, parseStartOfDay(startDate), parseEndOfDay(endDate));
+            return ResponseEntity.ok(series);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
     }
 
     // See ProfileService.getAccountDetails — Settings > Manage's own read-only email/country/phone.

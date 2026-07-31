@@ -6,6 +6,7 @@ import com.hckcapital.be.dto.CardCommentResponse;
 import com.hckcapital.be.dto.CardLikeToggleResponse;
 import com.hckcapital.be.dto.CardPageResponse;
 import com.hckcapital.be.dto.CardSummaryResponse;
+import com.hckcapital.be.dto.CardViewCountryResponse;
 import com.hckcapital.be.dto.FollowUserResponse;
 import com.hckcapital.be.dto.SaveCardRequest;
 import com.hckcapital.be.dto.SaveCardResponse;
@@ -64,6 +65,13 @@ public class CardController {
     ) {
         cardService.recordCardView(cardId, viewerProfileId);
         return ResponseEntity.noContent().build();
+    }
+
+    // See CardService.getCardViewCountryBreakdown — PostInsightsScreen's own country/region
+    // section.
+    @GetMapping("/{cardId}/view-countries")
+    public ResponseEntity<List<CardViewCountryResponse>> getCardViewCountries(@PathVariable String cardId) {
+        return ResponseEntity.ok(cardService.getCardViewCountryBreakdown(cardId));
     }
 
     @GetMapping("/{cardId}/comments")
