@@ -15,6 +15,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 import java.util.stream.Collectors;
 
@@ -24,6 +25,7 @@ import java.util.stream.Collectors;
 public class CardCommentService {
 
     private final MongoTemplate mongoTemplate;
+    private final NotificationService notificationService;
 
     /**
      * Returns all comments for a card, sorted by commentDate ascending.
@@ -123,6 +125,18 @@ public class CardCommentService {
                 new Update().push("comments", commentId),
                 "cards"
         );
+
+        Document card = mongoTemplate.findOne(
+                Query.query(Criteria.where("_id").is(cardId)),
+                Document.class, "cards"
+        );
+        if (card != null && card.get("creator") instanceof ObjectId creatorId) {
+            String snippet = commentText.length() > 80 ? commentText.substring(0, 80) + "…" : commentText;
+            notificationService.createNotification(
+                    creatorId, profileId, "CARD_COMMENTED", cardId, "card",
+                    Map.of("cardTitle", String.valueOf(card.getString("title")), "commentSnippet", snippet)
+            );
+        }
 
         Document commenter = mongoTemplate.findOne(
                 Query.query(Criteria.where("_id").is(profileId)),

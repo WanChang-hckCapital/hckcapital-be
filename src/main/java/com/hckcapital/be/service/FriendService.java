@@ -26,6 +26,7 @@ public class FriendService {
     private final ProfileRepository profileRepository;
     private final FollowRequestRepository followRequestRepository;
     private final MongoTemplate mongoTemplate;
+    private final NotificationService notificationService;
 
     /** All onboarded profiles except the caller (no follow status — client derives it). */
     public List<FriendSummaryResponse> getFriendList(String currentProfileId) {
@@ -77,6 +78,10 @@ public class FriendService {
                 Query.query(Criteria.where("_id").is(receiverObjId)),
                 new Update().push("followers", followerEntry),
                 Profile.class
+        );
+
+        notificationService.createNotification(
+                receiverObjId, senderObjId, "PROFILE_FOLLOWED", senderObjId, "profile", null
         );
     }
 

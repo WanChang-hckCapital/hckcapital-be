@@ -54,6 +54,7 @@ public class CardService {
     private final ComponentRepository componentRepository;
     private final MemberRepository memberRepository;
     private final ProfileRepository profileRepository;
+    private final NotificationService notificationService;
     private final ObjectMapper objectMapper;
 
     public CardPageResponse fetchAllCards(int page, int limit, String profileId) {
@@ -569,7 +570,9 @@ public class CardService {
                 .getMappedResults().stream().findFirst().map(this::mapDocument).orElse(null);
     }
 
-    private CardSummaryResponse mapDocument(Document doc) {
+    // Package-private (not private) — reused by SearchService.searchCards, which builds the
+    // same CardSummaryResponse-shaped projection via its own aggregation pipeline.
+    CardSummaryResponse mapDocument(Document doc) {
         CardSummaryResponse card = new CardSummaryResponse();
         card.setCardId(doc.getObjectId("_id").toHexString());
         card.setTitle(doc.getString("title"));
@@ -665,6 +668,18 @@ public class CardService {
         );
         Object likesObj = result != null ? result.get("likes") : null;
         int likeCount = likesObj instanceof List ? ((List<?>) likesObj).size() : 0;
+
+        // Only on an actual like, never on unlike — see NotificationService's own doc
+        // comment on this trigger set.
+        if (!alreadyLiked && result != null) {
+            Object creatorObj = result.get("creator");
+            if (creatorObj instanceof ObjectId creatorId) {
+                notificationService.createNotification(
+                        creatorId, profileId, "CARD_LIKED", cardId, "card",
+                        Map.of("cardTitle", String.valueOf(result.getString("title")))
+                );
+            }
+        }
 
         return new CardLikeToggleResponse(!alreadyLiked, likeCount);
     }

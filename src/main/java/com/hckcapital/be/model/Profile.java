@@ -96,6 +96,12 @@ public class Profile {
 
     private Notifications notifications = new Notifications();
 
+    // Expo push token for this profile's device — new field, not part of the old Next.js
+    // reference's own schema (that project is web-only, no native push). See
+    // NotificationService.createNotification for how this gets used: only sent to when
+    // RedisPresenceService says the recipient isn't currently online.
+    private String expoPushToken;
+
     // array of ObjectId refs to cards collection
     private List<ObjectId> cards = new ArrayList<>();
 

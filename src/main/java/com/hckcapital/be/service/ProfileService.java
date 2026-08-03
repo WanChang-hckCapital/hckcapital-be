@@ -121,6 +121,18 @@ public class ProfileService {
         return new NotificationSettingsResponse(n.getEmail(), n.getInApp());
     }
 
+    /** Registers/clears this profile's Expo push token — see ExpoPushService/
+     * NotificationService for how it's actually used (only pushed to when the recipient
+     * isn't currently online per RedisPresenceService). Called on login/app start and
+     * whenever expo-notifications hands the RN app a fresh token. */
+    public void updatePushToken(String memberId, String expoPushToken) {
+        ObjectId profileId = cardService.resolveActiveProfileId(memberId);
+        Profile profile = profileRepository.findById(profileId.toHexString())
+                .orElseThrow(() -> new RuntimeException("Profile not found"));
+        profile.setExpoPushToken(expoPushToken);
+        profileRepository.save(profile);
+    }
+
     /** Settings > Manage's own read-only email/country/phone display — see
      * UpdateProfileDetailsRequest's own doc comment on why those three stay out of the
      * editable form (email is set at signup, country/phone are a one-time onboarding step

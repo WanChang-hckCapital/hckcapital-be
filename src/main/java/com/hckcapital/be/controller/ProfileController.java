@@ -14,6 +14,7 @@ import com.hckcapital.be.dto.UpdateAccountTypeRequest;
 import com.hckcapital.be.dto.UpdateNotificationSettingsRequest;
 import com.hckcapital.be.dto.UpdatePreferencesRequest;
 import com.hckcapital.be.dto.UpdateProfileDetailsRequest;
+import com.hckcapital.be.dto.UpdatePushTokenRequest;
 import com.hckcapital.be.service.ProfileService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -79,6 +80,19 @@ public class ProfileController {
         try {
             String memberId = (String) authentication.getPrincipal();
             return ResponseEntity.ok(profileService.updateNotificationSettings(memberId, request));
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        }
+    }
+
+    // See ProfileService.updatePushToken — called on login/app start once expo-notifications
+    // hands the RN app a token, so ExpoPushService knows where to actually deliver a push.
+    @PutMapping("/push-token")
+    public ResponseEntity<?> updatePushToken(Authentication authentication, @RequestBody UpdatePushTokenRequest request) {
+        try {
+            String memberId = (String) authentication.getPrincipal();
+            profileService.updatePushToken(memberId, request.getExpoPushToken());
+            return ResponseEntity.noContent().build();
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         }
