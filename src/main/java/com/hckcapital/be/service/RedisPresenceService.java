@@ -12,10 +12,13 @@ import java.time.Duration;
  * redis.ts, plain ioredis). Two independent concerns share this one Redis instance:
  *
  * 1. Online presence (`online:profile:{id}`, 5-minute TTL, same as the reference) — a
- *    heartbeat key the RN app refreshes while foregrounded (see PresenceController). Read
- *    by NotificationService.createNotification to decide whether a push notification is
- *    actually worth sending — no point pushing to a phone that's already looking at the
- *    app.
+ *    heartbeat key the RN app refreshes while foregrounded (see PresenceController/
+ *    useMarkOnline.ts). Write-only from this service's own perspective now:
+ *    NotificationService.createNotification used to read this to decide whether a push was
+ *    worth sending, but now prefers NotificationSocketRegistry's own live connection state
+ *    instead (strictly more accurate than a 5-minute-TTL heartbeat) — this key is kept
+ *    around for any other future feature that wants a coarse "recently active" signal
+ *    without needing a live socket.
  * 2. Unread-count cache (`notifications:unread:{id}`) — a plain integer, not the
  *    reference's own per-user list-of-full-notifications structure (that list existed
  *    there to batch up to N notifications before firing an email digest, a feature this
@@ -61,19 +64,6 @@ public class RedisPresenceService {
             redisTemplate.delete(onlineKey(profileId));
         } catch (Exception e) {
             log.warn("Redis markOffline failed (profileId={})", profileId, e);
-        }
-    }
-
-    /** Defaults to "not online" when Redis itself is unreachable — the only consequence is
-     * NotificationService.createNotification attempting a push it might not have needed to
-     * (ExpoPushService is itself best-effort and swallows its own failures), never a hard
-     * error. */
-    public boolean isOnline(String profileId) {
-        try {
-            return Boolean.TRUE.equals(redisTemplate.hasKey(onlineKey(profileId)));
-        } catch (Exception e) {
-            log.warn("Redis isOnline failed (profileId={})", profileId, e);
-            return false;
         }
     }
 

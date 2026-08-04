@@ -33,6 +33,12 @@ public class SecurityConfig {
                 // (see OtpController, used by SignUpScreen's own OTP step before AuthService.
                 // signup ever creates an account/session).
                 .requestMatchers("/api/v1/auth/**", "/api/v1/otp/**", "/api/v1/health", "/actuator/**").permitAll()
+                // The WebSocket handshake is a plain HTTP GET this filter chain would
+                // otherwise reject (no Authorization header — a native WebSocket client
+                // can't reliably set custom headers on the handshake, hence the ?token=
+                // query param instead). JwtHandshakeInterceptor does its own auth check
+                // before the upgrade completes, so this isn't actually unauthenticated.
+                .requestMatchers("/ws/**").permitAll()
                 .anyRequest().authenticated()
             )
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);

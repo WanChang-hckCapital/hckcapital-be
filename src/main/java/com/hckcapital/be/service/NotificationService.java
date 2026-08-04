@@ -7,6 +7,7 @@ import com.hckcapital.be.model.Profile;
 import com.hckcapital.be.repository.NotificationRepository;
 import com.hckcapital.be.repository.ProfileRepository;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.bson.types.ObjectId;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.mongodb.core.MongoTemplate;
@@ -34,11 +35,20 @@ import java.util.stream.Collectors;
  *    it — adding a new event type later is just one more createNotification call, no schema
  *    change.
  * 2. No email-digest batching. The reference's own Redis-backed queue existed to bundle up
- *    to N missed notifications into a single email; this port skips that and instead does
- *    real OS-level push (see ExpoPushService) the moment a notification is created for a
- *    recipient who isn't currently online (RedisPresenceService) — closer to what a mobile
- *    app's users actually expect than a batched email.
+ *    to N missed notifications into a single email; this port skips that in favor of two
+ *    real delivery paths, tried in order:
+ *      a. Live, over NotificationSocketRegistry — if the recipient has an open
+ *         /ws/notifications connection (i.e. the app is actually open right now), they get
+ *         the notification the instant it's created, and useNotificationSocket.ts on the RN
+ *         side shows it as a local notification banner immediately (same
+ *         scheduleNotificationAsync call the LandingScreen test button uses).
+ *      b. Otherwise, a real OS-level push via ExpoPushService, for a closed/backgrounded
+ *         app.
+ *    This is a strictly more accurate signal than the old RedisPresenceService-only check
+ *    used to be — a live socket connection *is* "online," rather than an approximation of
+ *    it from a 5-minute heartbeat TTL.
  */
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class NotificationService {
@@ -48,6 +58,7 @@ public class NotificationService {
     private final MongoTemplate mongoTemplate;
     private final RedisPresenceService redisPresenceService;
     private final ExpoPushService expoPushService;
+    private final NotificationSocketRegistry notificationSocketRegistry;
 
     /** The one write path for every notification — mirrors the reference's own
      * createNotification ("the only function that used to insert into the db"). No-ops on
@@ -58,6 +69,7 @@ public class NotificationService {
             ObjectId receiverProfileId, ObjectId senderProfileId, String notificationType,
             ObjectId targetId, String targetType, Map<String, Object> relatedData
     ) {
+        log.info("[notify] createNotification type={} receiver={} sender={}", notificationType, receiverProfileId, senderProfileId);
         if (receiverProfileId == null) return;
         if (receiverProfileId.equals(senderProfileId)) return;
 
@@ -79,21 +91,33 @@ public class NotificationService {
         String receiverId = receiverProfileId.toHexString();
         redisPresenceService.setUnreadCount(receiverId, notificationRepository.countByReceiverUserIdAndReadFalse(receiverProfileId));
 
-        if (!redisPresenceService.isOnline(receiverId)) {
-            sendPush(receiverProfileId, senderProfileId, notificationType, relatedData);
+        Profile sender = senderProfileId != null
+                ? profileRepository.findById(senderProfileId.toHexString()).orElse(null) : null;
+
+        NotificationResponse liveEvent = new NotificationResponse(
+                notification.getId(),
+                senderProfileId != null ? senderProfileId.toHexString() : null,
+                sender != null ? sender.getAccountname() : null,
+                sender != null ? sender.getImageFilePath() : null,
+                notificationType,
+                false,
+                targetId != null ? targetId.toHexString() : null,
+                targetType,
+                relatedData,
+                notification.getCreatedAt()
+        );
+
+        boolean deliveredLive = notificationSocketRegistry.send(receiverId, liveEvent);
+        if (!deliveredLive) {
+            sendPush(receiverProfileId, sender, notificationType, relatedData);
         }
     }
 
-    private void sendPush(ObjectId receiverProfileId, ObjectId senderProfileId, String notificationType, Map<String, Object> relatedData) {
+    private void sendPush(ObjectId receiverProfileId, Profile sender, String notificationType, Map<String, Object> relatedData) {
         Profile receiver = profileRepository.findById(receiverProfileId.toHexString()).orElse(null);
         if (receiver == null || receiver.getExpoPushToken() == null || receiver.getExpoPushToken().isBlank()) return;
 
-        String senderName = null;
-        if (senderProfileId != null) {
-            Profile sender = profileRepository.findById(senderProfileId.toHexString()).orElse(null);
-            senderName = sender != null ? sender.getAccountname() : null;
-        }
-        if (senderName == null) senderName = "Someone";
+        String senderName = sender != null && sender.getAccountname() != null ? sender.getAccountname() : "Someone";
 
         String body = switch (notificationType) {
             case "CARD_LIKED" -> senderName + " liked your card"
