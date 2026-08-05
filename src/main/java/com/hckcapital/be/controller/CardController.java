@@ -5,6 +5,7 @@ import com.hckcapital.be.dto.CardCategoryCountResponse;
 import com.hckcapital.be.dto.CardCommentResponse;
 import com.hckcapital.be.dto.CardLikeToggleResponse;
 import com.hckcapital.be.dto.CardPageResponse;
+import com.hckcapital.be.dto.CardShareResponse;
 import com.hckcapital.be.dto.CardSummaryResponse;
 import com.hckcapital.be.dto.CardViewCountryResponse;
 import com.hckcapital.be.dto.FollowUserResponse;
@@ -53,6 +54,15 @@ public class CardController {
     ) {
         if (!ObjectId.isValid(cardId) || !ObjectId.isValid(profileId)) return ResponseEntity.badRequest().build();
         return ResponseEntity.ok(cardService.toggleLike(new ObjectId(cardId), new ObjectId(profileId)));
+    }
+
+    // See CardService.recordCardShare — called from CardMeta.tsx right after the LINE share
+    // dialog actually opens (fire-and-forget, matching the old Next.js reference project's
+    // own updateShareCount call site in ShareDialog.tsx).
+    @PostMapping("/{cardId}/share")
+    public ResponseEntity<CardShareResponse> recordCardShare(@PathVariable String cardId) {
+        if (!ObjectId.isValid(cardId)) return ResponseEntity.badRequest().build();
+        return ResponseEntity.ok(cardService.recordCardShare(new ObjectId(cardId)));
     }
 
     // See CardService.recordCardView — called from CardDetailScreen.tsx when opening a

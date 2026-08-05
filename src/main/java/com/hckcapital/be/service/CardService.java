@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.hckcapital.be.dto.CardCategoryCountResponse;
 import com.hckcapital.be.dto.CardLikeToggleResponse;
 import com.hckcapital.be.dto.CardPageResponse;
+import com.hckcapital.be.dto.CardShareResponse;
 import com.hckcapital.be.dto.CardSummaryResponse;
 import com.hckcapital.be.dto.CardViewCountryResponse;
 import com.hckcapital.be.dto.FollowUserResponse;
@@ -24,6 +25,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.bson.Document;
 import org.bson.types.ObjectId;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.mongodb.core.FindAndModifyOptions;
 import org.springframework.data.mongodb.core.MongoTemplate;
 import org.springframework.data.mongodb.core.aggregation.*;
 import org.springframework.data.mongodb.core.query.Criteria;
@@ -682,6 +684,23 @@ public class CardService {
         }
 
         return new CardLikeToggleResponse(!alreadyLiked, likeCount);
+    }
+
+    /** Increments a card's shareCount by 1 — ported from the old Next.js reference
+     * project's own updateShareCount (lib/actions/workspace.actions.ts), called there as a
+     * fire-and-forget side effect right after the LINE share dialog actually opens
+     * (ShareDialog.tsx). $inc + returnNew in one round trip, unlike toggleLike's own
+     * update-then-findOne — there's no derived state to recompute here (unlike likeCount,
+     * which comes from the `likes` array's own length), just the counter itself. */
+    public CardShareResponse recordCardShare(ObjectId cardId) {
+        Document result = mongoTemplate.findAndModify(
+                Query.query(Criteria.where("_id").is(cardId)),
+                new Update().inc("shareCount", 1),
+                FindAndModifyOptions.options().returnNew(true),
+                Document.class, "cards"
+        );
+        int shareCount = result != null ? result.getInteger("shareCount", 0) : 0;
+        return new CardShareResponse(shareCount);
     }
 
     /** Records a card view in the CardView collection — see CardView's own doc comment for
