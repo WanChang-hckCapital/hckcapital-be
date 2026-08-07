@@ -2,6 +2,7 @@ package com.hckcapital.be.service;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.hckcapital.be.dto.AffiliateStatusResponse;
 import com.hckcapital.be.dto.AffiliatesOverviewResponse;
 import com.hckcapital.be.dto.RewardfulAffiliateResponse;
 import com.hckcapital.be.dto.RewardfulCampaignResponse;
@@ -62,6 +63,38 @@ public class RewardfulService {
         } catch (Exception e) {
             log.warn("Rewardful API call failed", e);
             return new AffiliatesOverviewResponse(true, e.getMessage(), null, List.of());
+        }
+    }
+
+    /** Sidebar.tsx's own "Join Affiliates" (self-serve signup, FLEXADMIN-only now — normal
+     * accounts only join by invitation) vs "My Affiliate" (shown only when already an
+     * existing affiliate) gating. There's no per-user affiliate flag anywhere in this app's
+     * own data (Profile/Member have no rewardfulAffiliateId) since joining always happened
+     * entirely on Rewardful's own hosted signup page — so this is a live lookup, matching the
+     * calling profile's own email against the same campaign/affiliate list
+     * getAffiliatesOverview already reads (case-insensitive; Rewardful itself is
+     * case-insensitive on email at signup). Same configured/errorMessage gate as
+     * getAffiliatesOverview. */
+    public AffiliateStatusResponse getAffiliateStatus(String email) {
+        if (apiSecret == null || apiSecret.isBlank()) {
+            return new AffiliateStatusResponse(false, null, false, null);
+        }
+        if (email == null || email.isBlank()) {
+            return new AffiliateStatusResponse(true, null, false, null);
+        }
+        try {
+            List<RewardfulCampaignResponse> campaigns = fetchCampaigns();
+            if (campaigns.isEmpty()) {
+                return new AffiliateStatusResponse(true, null, false, null);
+            }
+            List<RewardfulAffiliateResponse> affiliates = fetchAffiliatesByCampaign(campaigns.get(0).getId());
+            RewardfulAffiliateResponse match = affiliates.stream()
+                    .filter(a -> email.equalsIgnoreCase(a.getEmail()))
+                    .findFirst().orElse(null);
+            return new AffiliateStatusResponse(true, null, match != null, match);
+        } catch (Exception e) {
+            log.warn("Rewardful affiliate-status lookup failed", e);
+            return new AffiliateStatusResponse(true, e.getMessage(), false, null);
         }
     }
 

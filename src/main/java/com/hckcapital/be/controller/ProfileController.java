@@ -1,6 +1,7 @@
 package com.hckcapital.be.controller;
 
 import com.hckcapital.be.dto.AccountDetailsResponse;
+import com.hckcapital.be.dto.AffiliateStatusResponse;
 import com.hckcapital.be.dto.CardPageResponse;
 import com.hckcapital.be.dto.CardSummaryResponse;
 import com.hckcapital.be.dto.CollectionSummaryResponse;
@@ -153,6 +154,14 @@ public class ProfileController {
     public ResponseEntity<AccountDetailsResponse> getAccountDetails(Authentication authentication) {
         String memberId = (String) authentication.getPrincipal();
         return ResponseEntity.ok(profileService.getAccountDetails(memberId));
+    }
+
+    // See ProfileService.getAffiliateStatus/RewardfulService — Sidebar.tsx's own "Join
+    // Affiliates" (FLEXADMIN-only) vs "My Affiliate" (existing-affiliate-only) gating.
+    @GetMapping("/affiliate-status")
+    public ResponseEntity<AffiliateStatusResponse> getAffiliateStatus(Authentication authentication) {
+        String memberId = (String) authentication.getPrincipal();
+        return ResponseEntity.ok(profileService.getAffiliateStatus(memberId));
     }
 
     // See ProfileService.updateProfileDetails — Settings > Manage's own edit form.

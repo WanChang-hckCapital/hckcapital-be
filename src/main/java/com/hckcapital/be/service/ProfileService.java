@@ -1,6 +1,7 @@
 package com.hckcapital.be.service;
 
 import com.hckcapital.be.dto.AccountDetailsResponse;
+import com.hckcapital.be.dto.AffiliateStatusResponse;
 import com.hckcapital.be.dto.CardPageResponse;
 import com.hckcapital.be.dto.CardSummaryResponse;
 import com.hckcapital.be.dto.CollectionSummaryResponse;
@@ -62,6 +63,7 @@ public class ProfileService {
     private final CollectionRepository collectionRepository;
     private final CardService cardService;
     private final MongoTemplate mongoTemplate;
+    private final RewardfulService rewardfulService;
 
     // Same public chatroom every fresh onboarding gets auto-joined to as the old Next.js
     // reference project's own OnboardingComponent.tsx (see inviteToPublicChatroom below).
@@ -143,6 +145,17 @@ public class ProfileService {
         Member member = memberRepository.findById(memberId)
                 .orElseThrow(() -> new RuntimeException("Member not found"));
         return new AccountDetailsResponse(member.getEmail(), member.getCountry(), member.getCountrycode(), member.getPhone());
+    }
+
+    /** Sidebar.tsx's own "Join Affiliates"/"My Affiliate" gating — see
+     * RewardfulService.getAffiliateStatus's own doc comment. Same Member.email (not
+     * Profile.email) getAccountDetails above uses, for the same reason: it's the real
+     * login/auth email, which is what a user would have actually typed into Rewardful's own
+     * signup form. */
+    public AffiliateStatusResponse getAffiliateStatus(String memberId) {
+        Member member = memberRepository.findById(memberId)
+                .orElseThrow(() -> new RuntimeException("Member not found"));
+        return rewardfulService.getAffiliateStatus(member.getEmail());
     }
 
     /** Settings > Manage's own edit form — mirrors the old Next.js reference project's own

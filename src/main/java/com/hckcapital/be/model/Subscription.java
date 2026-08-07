@@ -23,4 +23,13 @@ public class Subscription {
     private LocalDateTime planStarted;
 
     private double totalAmount;
+
+    // Below: added for SubscriptionService's own subscribe flow (see its doc comment) —
+    // mirrors the reference's own subscriptionSchema.paidTerms/stripeSubscriptionId fields,
+    // not previously ported since nothing wrote a real per-user subscription record before.
+    // `paidTerms` is in months (1 = monthly, 12 = yearly), same convention as the reference's
+    // own storeSubscription.
+    private Integer paidTerms;
+
+    private String stripeSubscriptionId;
 }
