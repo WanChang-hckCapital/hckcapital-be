@@ -8,7 +8,9 @@ import com.hckcapital.be.dto.CollectionSummaryResponse;
 import com.hckcapital.be.dto.CreateCollectionRequest;
 import com.hckcapital.be.dto.FollowUserResponse;
 import com.hckcapital.be.dto.OnboardRequest;
+import com.hckcapital.be.dto.PointsHistoryResponse;
 import com.hckcapital.be.dto.ProfileResponse;
+import com.hckcapital.be.dto.ReferralResponse;
 import com.hckcapital.be.dto.DailySeriesPointResponse;
 import com.hckcapital.be.dto.ReportOverviewResponse;
 import com.hckcapital.be.dto.UpdateAccountTypeRequest;
@@ -162,6 +164,20 @@ public class ProfileController {
     public ResponseEntity<AffiliateStatusResponse> getAffiliateStatus(Authentication authentication) {
         String memberId = (String) authentication.getPrincipal();
         return ResponseEntity.ok(profileService.getAffiliateStatus(memberId));
+    }
+
+    // See ProfileService.getReferralInfo — Sidebar.tsx's own "Referral" item.
+    @GetMapping("/referral")
+    public ResponseEntity<ReferralResponse> getReferralInfo(Authentication authentication) {
+        String memberId = (String) authentication.getPrincipal();
+        return ResponseEntity.ok(profileService.getReferralInfo(memberId));
+    }
+
+    // See ProfileService.getPointsHistory — MissionScreen.tsx's own "Points Log" tab.
+    @GetMapping("/points")
+    public ResponseEntity<PointsHistoryResponse> getPointsHistory(Authentication authentication) {
+        String memberId = (String) authentication.getPrincipal();
+        return ResponseEntity.ok(profileService.getPointsHistory(memberId));
     }
 
     // See ProfileService.updateProfileDetails — Settings > Manage's own edit form.

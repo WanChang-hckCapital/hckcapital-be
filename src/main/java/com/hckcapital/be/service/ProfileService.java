@@ -10,8 +10,11 @@ import com.hckcapital.be.dto.FollowUserResponse;
 import com.hckcapital.be.dto.NotificationSettingsResponse;
 import com.hckcapital.be.dto.OnboardRequest;
 import com.hckcapital.be.dto.OnboardResponse;
+import com.hckcapital.be.dto.PointsHistoryResponse;
+import com.hckcapital.be.dto.PointsLogEntryResponse;
 import com.hckcapital.be.dto.PreferencesResponse;
 import com.hckcapital.be.dto.ProfileResponse;
+import com.hckcapital.be.dto.ReferralResponse;
 import com.hckcapital.be.dto.DailySeriesPointResponse;
 import com.hckcapital.be.dto.ReportOverviewResponse;
 import com.hckcapital.be.dto.UpdateNotificationSettingsRequest;
@@ -22,10 +25,18 @@ import com.hckcapital.be.model.CardView;
 import com.hckcapital.be.model.Collection;
 import com.hckcapital.be.model.Member;
 import com.hckcapital.be.model.Profile;
+import com.hckcapital.be.model.MissionProgress;
+import com.hckcapital.be.model.PointsLog;
 import com.hckcapital.be.model.ProfileView;
+import com.hckcapital.be.model.RedeemGift;
+import com.hckcapital.be.model.ReferralHistory;
 import com.hckcapital.be.repository.CollectionRepository;
 import com.hckcapital.be.repository.MemberRepository;
+import com.hckcapital.be.repository.MissionProgressRepository;
+import com.hckcapital.be.repository.PointsLogRepository;
 import com.hckcapital.be.repository.ProfileRepository;
+import com.hckcapital.be.repository.RedeemGiftRepository;
+import com.hckcapital.be.repository.ReferralHistoryRepository;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.bson.Document;
@@ -64,6 +75,10 @@ public class ProfileService {
     private final CardService cardService;
     private final MongoTemplate mongoTemplate;
     private final RewardfulService rewardfulService;
+    private final ReferralHistoryRepository referralHistoryRepository;
+    private final PointsLogRepository pointsLogRepository;
+    private final RedeemGiftRepository redeemGiftRepository;
+    private final MissionProgressRepository missionProgressRepository;
 
     // Same public chatroom every fresh onboarding gets auto-joined to as the old Next.js
     // reference project's own OnboardingComponent.tsx (see inviteToPublicChatroom below).
@@ -156,6 +171,86 @@ public class ProfileService {
         Member member = memberRepository.findById(memberId)
                 .orElseThrow(() -> new RuntimeException("Member not found"));
         return rewardfulService.getAffiliateStatus(member.getEmail());
+    }
+
+    /** Sidebar > Referral — see ReferralResponse's own doc comment. Scoped to the caller's
+     * active profile, same resolveActiveProfileId this backend's other per-profile reads
+     * already use. `referralCode` can come back null/blank for a profile created via Google
+     * Sign-In (see AuthService.loginWithGoogle's own doc comment — that path never generates
+     * one, unlike email/password signup); the screen handles that case itself rather than
+     * this backend inventing a code on the fly for a read-only endpoint. */
+    public ReferralResponse getReferralInfo(String memberId) {
+        ObjectId profileId = cardService.resolveActiveProfileId(memberId);
+        Profile profile = profileRepository.findById(profileId.toHexString())
+                .orElseThrow(() -> new RuntimeException("Profile not found"));
+        Query query = new Query(Criteria.where("referrerId").is(profileId).and("status").is("completed"));
+        long successfulReferralsCount = mongoTemplate.count(query, ReferralHistory.class);
+        return new ReferralResponse(profile.getReferralCode(), (int) successfulReferralsCount);
+    }
+
+    /** Sidebar > Mission > Points Log tab — mirrors the old Next.js reference project's own
+     * loadPersonalPoints (lib/actions/user.actions.ts) field-for-field, including its exact
+     * "top 50 newest, no cursor pagination" cap. `currentPoints` is the most recent log's
+     * own afterPoints (not Profile.bubblePoint read directly) — same as that reference
+     * function, so a log write and the displayed balance can never disagree even for a
+     * moment mid-request.
+     *
+     * The reference resolves display fields (mission type/period, gift name, referrer/
+     * referee names) via Mongoose `.populate()` chains; this does the same job with plain
+     * batched repository finds instead — one findAllById per related collection rather than
+     * a join, which is the idiomatic Spring Data equivalent here. */
+    public PointsHistoryResponse getPointsHistory(String memberId) {
+        ObjectId profileId = cardService.resolveActiveProfileId(memberId);
+        List<PointsLog> logs = pointsLogRepository.findByProfileIdOrderByCreatedAtDesc(
+                profileId, org.springframework.data.domain.PageRequest.of(0, 50));
+
+        List<String> missionIds = logs.stream().map(PointsLog::getMission).filter(Objects::nonNull)
+                .map(ObjectId::toHexString).distinct().toList();
+        List<String> referralIds = logs.stream().map(PointsLog::getReferral).filter(Objects::nonNull)
+                .map(ObjectId::toHexString).distinct().toList();
+        List<String> giftIds = logs.stream().map(PointsLog::getRedeemGift).filter(Objects::nonNull)
+                .map(ObjectId::toHexString).distinct().toList();
+
+        Map<String, MissionProgress> missionsById = missionProgressRepository.findAllById(missionIds).stream()
+                .collect(Collectors.toMap(MissionProgress::getId, m -> m));
+        Map<String, ReferralHistory> referralsById = referralHistoryRepository.findAllById(referralIds).stream()
+                .collect(Collectors.toMap(ReferralHistory::getId, r -> r));
+        Map<String, RedeemGift> giftsById = redeemGiftRepository.findAllById(giftIds).stream()
+                .collect(Collectors.toMap(RedeemGift::getId, g -> g));
+
+        List<String> referralProfileIds = referralsById.values().stream()
+                .flatMap(r -> java.util.stream.Stream.of(r.getReferrerId(), r.getRefereeId()))
+                .filter(Objects::nonNull).map(ObjectId::toHexString).distinct().toList();
+        Map<String, String> accountNameByProfileId = profileRepository.findAllById(referralProfileIds).stream()
+                .collect(Collectors.toMap(Profile::getId, Profile::getAccountname));
+
+        DateTimeFormatter isoFormatter = DateTimeFormatter.ISO_INSTANT;
+        List<PointsLogEntryResponse> entries = logs.stream().map(log -> {
+            MissionProgress mission = log.getMission() != null ? missionsById.get(log.getMission().toHexString()) : null;
+            ReferralHistory referral = log.getReferral() != null ? referralsById.get(log.getReferral().toHexString()) : null;
+            RedeemGift gift = log.getRedeemGift() != null ? giftsById.get(log.getRedeemGift().toHexString()) : null;
+
+            return new PointsLogEntryResponse(
+                    log.getId(),
+                    log.getPointChanges() != null ? log.getPointChanges() : 0,
+                    log.getBeforePoints() != null ? log.getBeforePoints() : 0,
+                    log.getAfterPoints() != null ? log.getAfterPoints() : 0,
+                    log.getSourceType(),
+                    log.getDescription(),
+                    log.getCreatedAt() != null ? isoFormatter.format(log.getCreatedAt().toInstant()) : null,
+                    mission != null ? mission.getMissionType() : null,
+                    mission != null ? mission.getPeriod() : null,
+                    gift != null ? gift.getName() : null,
+                    referral != null ? referral.getReferralCode() : null,
+                    referral != null && referral.getReferrerId() != null
+                            ? accountNameByProfileId.get(referral.getReferrerId().toHexString()) : null,
+                    referral != null && referral.getRefereeId() != null
+                            ? accountNameByProfileId.get(referral.getRefereeId().toHexString()) : null
+            );
+        }).toList();
+
+        int currentPoints = !logs.isEmpty() && logs.get(0).getAfterPoints() != null ? logs.get(0).getAfterPoints() : 0;
+        return new PointsHistoryResponse(currentPoints, entries);
     }
 
     /** Settings > Manage's own edit form — mirrors the old Next.js reference project's own
@@ -257,6 +352,13 @@ public class ProfileService {
         Profile profile = profileRepository.findById(profileId)
                 .orElseThrow(() -> new RuntimeException("Profile not found: " + profileId));
 
+        // Captured before overwriting — awardOnboardingCompletionPoints below must only ever
+        // fire the first time a profile actually completes onboarding, not on every call
+        // (the RN app's own navigation gating already keeps it from being reachable again
+        // once onboarded, but guarding here too is what actually stops a repeat call from
+        // double-awarding bubblePoint rather than relying on client behavior alone).
+        boolean wasAlreadyOnboarded = Boolean.TRUE.equals(profile.getOnboarded());
+
         profile.setAccountname(request.getAccountname());
         profile.setShortdescription(request.getShortdescription());
         if (request.getImageFilePath() != null && !request.getImageFilePath().isBlank()) {
@@ -273,7 +375,87 @@ public class ProfileService {
         inviteToPublicChatroom(profileId);
         ensureDefaultCollections(new ObjectId(profileId));
 
+        if (!wasAlreadyOnboarded) {
+            awardOnboardingCompletionPoints(profile);
+        }
+
         return new OnboardResponse(profile.getAccountname(), profile.getShortdescription(), profile.getImageFilePath(), true);
+    }
+
+    // Mirrors the old Next.js reference project's own bubblePointConstants.ts.
+    private static final int FRIENDS_FINISH_SETUP_POINTS = 200;
+    private static final int NEW_USER_POINTS = 100;
+    private static final int SIGN_UP_W_LINK_BONUS = 50;
+
+    /** Ported from the old Next.js reference project's own updateMemberDetails (lib/
+     * actions/user.actions.ts) — the reward-payout half of the referral flow, triggered by
+     * completeOnboarding above (AuthService.signup's own applyReferralCode only writes the
+     * "uncompleted" ReferralHistory row; nothing gets paid out until onboarding finishes).
+     *
+     * Two cases, matching the reference exactly:
+     * - An "uncompleted" ReferralHistory row exists for this profile as referee (they signed
+     *   up with a valid `?ref=`/typed code): flip it to "completed", pay the REFERRER
+     *   FRIENDS_FINISH_SETUP_POINTS (200), and pay this REFEREE both NEW_USER_POINTS (100)
+     *   and SIGN_UP_W_LINK_BONUS (50) — 150 total.
+     * - No such row (organic signup, or a referral that's already been consumed/invalid):
+     *   pay just NEW_USER_POINTS (100) to this profile as a plain completion bonus.
+     * Every bubblePoint change is paired with a PointsLog row, same audit-trail convention
+     * the reference itself follows (loadPersonalPoints on that side reads this same
+     * collection back out for the Points dashboard). */
+    private void awardOnboardingCompletionPoints(Profile referee) {
+        ObjectId refereeId = new ObjectId(referee.getId());
+        ReferralHistory referral = referralHistoryRepository
+                .findByRefereeIdAndStatus(refereeId, "uncompleted")
+                .orElse(null);
+
+        if (referral == null) {
+            int before = referee.getBubblePoint() != null ? referee.getBubblePoint() : 0;
+            int after = before + NEW_USER_POINTS;
+            referee.setBubblePoint(after);
+            profileRepository.save(referee);
+            logPoints(refereeId, NEW_USER_POINTS, before, after, null,
+                    "Welcome bonus for completing your account profile!");
+            return;
+        }
+
+        referral.setStatus("completed");
+        referral.setRewardPoints(FRIENDS_FINISH_SETUP_POINTS);
+        referral.setUpdatedAt(new Date());
+        referralHistoryRepository.save(referral);
+        ObjectId referralId = new ObjectId(referral.getId());
+
+        profileRepository.findById(referral.getReferrerId().toHexString()).ifPresent(referrer -> {
+            int before = referrer.getBubblePoint() != null ? referrer.getBubblePoint() : 0;
+            int after = before + FRIENDS_FINISH_SETUP_POINTS;
+            referrer.setBubblePoint(after);
+            profileRepository.save(referrer);
+            logPoints(new ObjectId(referrer.getId()), FRIENDS_FINISH_SETUP_POINTS, before, after, referralId,
+                    "Successfully referred a friend (" + referee.getAccountname() + ")!");
+        });
+
+        int totalRefereeBonus = NEW_USER_POINTS + SIGN_UP_W_LINK_BONUS;
+        int refereeBefore = referee.getBubblePoint() != null ? referee.getBubblePoint() : 0;
+        int refereeAfter = refereeBefore + totalRefereeBonus;
+        referee.setBubblePoint(refereeAfter);
+        profileRepository.save(referee);
+        logPoints(refereeId, totalRefereeBonus, refereeBefore, refereeAfter, referralId,
+                "Welcome bonus for signing up using a referral link!");
+    }
+
+    private void logPoints(ObjectId profileId, int pointChanges, int beforePoints, int afterPoints,
+                            ObjectId referral, String description) {
+        PointsLog log = new PointsLog();
+        log.setProfileId(profileId);
+        log.setPointChanges(pointChanges);
+        log.setBeforePoints(beforePoints);
+        log.setAfterPoints(afterPoints);
+        log.setSourceType("referral");
+        log.setReferral(referral);
+        log.setDescription(description);
+        Date now = new Date();
+        log.setCreatedAt(now);
+        log.setUpdatedAt(now);
+        pointsLogRepository.save(log);
     }
 
     /** Mirrors the old Next.js reference project's own migrateExistingProfilesDefaultCollections

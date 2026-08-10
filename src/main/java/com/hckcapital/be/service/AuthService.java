@@ -10,11 +10,13 @@ import com.hckcapital.be.dto.LoginResponse;
 import com.hckcapital.be.model.Member;
 import com.hckcapital.be.model.PasswordResetToken;
 import com.hckcapital.be.model.Profile;
+import com.hckcapital.be.model.ReferralHistory;
 import com.hckcapital.be.model.Subscription;
 import com.hckcapital.be.model.User;
 import com.hckcapital.be.repository.MemberRepository;
 import com.hckcapital.be.repository.PasswordResetTokenRepository;
 import com.hckcapital.be.repository.ProfileRepository;
+import com.hckcapital.be.repository.ReferralHistoryRepository;
 import com.hckcapital.be.repository.SubscriptionRepository;
 import com.hckcapital.be.repository.UserRepository;
 import jakarta.annotation.PostConstruct;
@@ -26,7 +28,10 @@ import org.springframework.stereotype.Service;
 
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
+import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.Date;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -38,6 +43,7 @@ public class AuthService {
     // TODO - session expire token (permanent)
     private final MemberRepository memberRepository;
     private final ProfileRepository profileRepository;
+    private final ReferralHistoryRepository referralHistoryRepository;
     private final SubscriptionRepository subscriptionRepository;
     private final PasswordResetTokenRepository passwordResetTokenRepository;
     private final UserRepository userRepository;
@@ -165,6 +171,11 @@ public class AuthService {
         return memberRepository.save(member);
     }
 
+    // Mirrors the old Next.js reference project's own bubblePointConstants.ts — see
+    // applyReferralCode below for the cap, and ProfileService.completeOnboarding for the
+    // reward amounts these feed into.
+    private static final int MAX_REFERRAL_IN_MONTH = 20;
+
     /** Ported from the old Next.js reference project's own createUser server action (see
      * hckcapital/lib/actions/user.actions.ts) — called only after OtpService.verifyOtp has
      * confirmed the email (see AuthController.signup), same order of operations as the
@@ -173,16 +184,22 @@ public class AuthService {
      * read that collection itself, but a Member created here should still be resolvable the
      * same way the reference app's own createUser would leave it, since both stacks share
      * this database (e.g. anything on the reference app's side that still walks
-     * Member.user → User). Deliberately still skips:
-     * - Referral code redemption (looking up a referrer by refCode, writing a
-     *   ReferralHistory row) — never ported to this backend at all, see Profile.
-     *   referralCode's own doc comment on that field. A referralCode is still generated and
-     *   stored on the new Profile purely because the reference schema's Mongoose model
-     *   declares it unique — leaving it null on every signup would risk a duplicate-key
-     *   collision against that same index in the shared database.
+     * Member.user → User).
+     *
+     * `refCode` is optional (see SignUpRequest.getRefCode's own doc comment) — when present
+     * and it matches an existing Profile.referralCode, this writes an "uncompleted"
+     * ReferralHistory row linking referrer→referee, same as the reference's own
+     * ReferralHistoryModel.create call. The actual bubblePoint reward payout doesn't happen
+     * here though — same as the reference, it only happens once the referee actually
+     * *completes onboarding* (see ProfileService.completeOnboarding), not at signup itself;
+     * a referral that never gets onboarded stays "uncompleted" with 0 reward points forever.
+     * An unknown code, or a referrer who's already hit MAX_REFERRAL_IN_MONTH new referrals
+     * this calendar month, is silently ignored — same as the reference (which only logs a
+     * warning), not a signup failure.
+     *
      * A brand-new account starts unonboarded (onboarded: false), same as loginWithGoogle's
      * own new-account path — the RN app is expected to route into onboarding next. */
-    public LoginResponse signup(String email, String username, String password) {
+    public LoginResponse signup(String email, String username, String password, String refCode) {
         if (userRepository.findByEmail(email).isPresent() || memberRepository.findByEmail(email).isPresent()) {
             throw new RuntimeException("This email is already in use.");
         }
@@ -204,6 +221,10 @@ public class AuthService {
         profile.setReferralCode(generateReferralCode());
         Profile savedProfile = profileRepository.save(profile);
 
+        if (refCode != null && !refCode.isBlank()) {
+            applyReferralCode(refCode.trim(), savedProfile);
+        }
+
         Member member = new Member();
         member.setUser(new ObjectId(savedUser.getId()));
         member.setEmail(email);
@@ -213,6 +234,36 @@ public class AuthService {
         member = memberRepository.save(member);
 
         return buildLoginResponse(member);
+    }
+
+    /** See signup's own doc comment — writes the "uncompleted" ReferralHistory row a
+     * successful onboarding later flips to "completed" (ProfileService.completeOnboarding).
+     * Package-private-equivalent (private) since it's only ever reached from signup here,
+     * same as the reference keeps this logic inline in createUser/createOAuthUser rather
+     * than as its own exported action. */
+    private void applyReferralCode(String refCode, Profile referee) {
+        Profile referrer = profileRepository.findByReferralCode(refCode).orElse(null);
+        if (referrer == null) {
+            return;
+        }
+
+        Date startOfMonth = Date.from(LocalDate.now().withDayOfMonth(1).atStartOfDay(ZoneId.systemDefault()).toInstant());
+        long monthlyCount = referralHistoryRepository.countByReferrerIdAndCreatedAtGreaterThanEqual(
+                new ObjectId(referrer.getId()), startOfMonth);
+        if (monthlyCount >= MAX_REFERRAL_IN_MONTH) {
+            return;
+        }
+
+        ReferralHistory history = new ReferralHistory();
+        history.setReferrerId(new ObjectId(referrer.getId()));
+        history.setRefereeId(new ObjectId(referee.getId()));
+        history.setReferralCode(refCode);
+        history.setRewardPoints(0);
+        history.setStatus("uncompleted");
+        Date now = new Date();
+        history.setCreatedAt(now);
+        history.setUpdatedAt(now);
+        referralHistoryRepository.save(history);
     }
 
     private static final String REFERRAL_CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";

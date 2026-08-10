@@ -60,9 +60,18 @@ public class CardController {
     // dialog actually opens (fire-and-forget, matching the old Next.js reference project's
     // own updateShareCount call site in ShareDialog.tsx).
     @PostMapping("/{cardId}/share")
-    public ResponseEntity<CardShareResponse> recordCardShare(@PathVariable String cardId) {
+    public ResponseEntity<CardShareResponse> recordCardShare(Authentication authentication, @PathVariable String cardId) {
         if (!ObjectId.isValid(cardId)) return ResponseEntity.badRequest().build();
-        return ResponseEntity.ok(cardService.recordCardShare(new ObjectId(cardId)));
+        // SHARE_CARD mission credit — best-effort: a missing/invalid caller identity still
+        // records the share count itself, just without mission progress.
+        ObjectId sharerProfileId = null;
+        if (authentication != null) {
+            try {
+                sharerProfileId = cardService.resolveActiveProfileId((String) authentication.getPrincipal());
+            } catch (RuntimeException ignored) {
+            }
+        }
+        return ResponseEntity.ok(cardService.recordCardShare(new ObjectId(cardId), sharerProfileId));
     }
 
     // See CardService.recordCardView — called from CardDetailScreen.tsx when opening a
@@ -152,8 +161,7 @@ public class CardController {
     public ResponseEntity<?> publishCard(Authentication authentication, @PathVariable String cardId) {
         try {
             String memberId = (String) authentication.getPrincipal();
-            cardService.publishCard(memberId, cardId);
-            return ResponseEntity.ok().build();
+            return ResponseEntity.ok(cardService.publishCard(memberId, cardId));
         } catch (SecurityException e) {
             return ResponseEntity.status(403).body(Map.of("error", e.getMessage()));
         } catch (RuntimeException e) {

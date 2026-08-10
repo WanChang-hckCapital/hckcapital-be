@@ -26,6 +26,7 @@ public class CardCommentService {
 
     private final MongoTemplate mongoTemplate;
     private final NotificationService notificationService;
+    private final MissionService missionService;
 
     /**
      * Returns all comments for a card, sorted by commentDate ascending.
@@ -138,6 +139,11 @@ public class CardCommentService {
             );
         }
 
+        // LEAVE_COMMENTS mission credit — no anti-farming dedup, matching the reference
+        // exactly (every successful comment increments progress, unlike LIKE_CARDS' own
+        // once-per-card guard).
+        MissionService.MissionAndPrimeTimeResult missionResult = missionService.onCommentAdded(profileId);
+
         Document commenter = mongoTemplate.findOne(
                 Query.query(Criteria.where("_id").is(profileId)),
                 Document.class, "profiles"
@@ -149,7 +155,8 @@ public class CardCommentService {
                 commentDoc.getString("commentID"), commentText,
                 profileId.toHexString(), commenterName, commenterImg,
                 0, false,
-                commentDate
+                commentDate,
+                missionResult.mission(), missionResult.primeTime()
         );
     }
 
@@ -175,7 +182,8 @@ public class CardCommentService {
                 commentID, comment,
                 commenterId, commenterName, commenterImg,
                 likeCount, liked,
-                commentDate
+                commentDate,
+                null, null
         );
     }
 }

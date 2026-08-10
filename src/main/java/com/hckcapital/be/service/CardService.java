@@ -7,6 +7,8 @@ import com.hckcapital.be.dto.CardLikeToggleResponse;
 import com.hckcapital.be.dto.CardPageResponse;
 import com.hckcapital.be.dto.CardShareResponse;
 import com.hckcapital.be.dto.CardSummaryResponse;
+import com.hckcapital.be.dto.IncrementMissionResult;
+import com.hckcapital.be.dto.PublishCardResponse;
 import com.hckcapital.be.dto.CardViewCountryResponse;
 import com.hckcapital.be.dto.FollowUserResponse;
 import com.hckcapital.be.dto.SaveCardRequest;
@@ -58,6 +60,7 @@ public class CardService {
     private final ProfileRepository profileRepository;
     private final NotificationService notificationService;
     private final ObjectMapper objectMapper;
+    private final MissionService missionService;
 
     public CardPageResponse fetchAllCards(int page, int limit, String profileId) {
         int skip = (page - 1) * limit;
@@ -672,7 +675,10 @@ public class CardService {
         int likeCount = likesObj instanceof List ? ((List<?>) likesObj).size() : 0;
 
         // Only on an actual like, never on unlike — see NotificationService's own doc
-        // comment on this trigger set.
+        // comment on this trigger set. Populated only when a new like actually earns
+        // mission credit — see CardLikeToggleResponse's own doc comment.
+        IncrementMissionResult missionProgress = null;
+        IncrementMissionResult primeTimeMissionProgress = null;
         if (!alreadyLiked && result != null) {
             Object creatorObj = result.get("creator");
             if (creatorObj instanceof ObjectId creatorId) {
@@ -681,9 +687,29 @@ public class CardService {
                         Map.of("cardTitle", String.valueOf(result.getString("title")))
                 );
             }
+
+            // LIKE_CARDS mission credit — same anti-farming guard the reference applies
+            // (a like/unlike/like cycle on the same card only ever counts once): only
+            // credited the first time THIS profile likes THIS card, tracked via
+            // likeMissionCreditedBy ($addToSet, so a repeat credit attempt is a no-op even
+            // without the exists() check below racing).
+            boolean alreadyCredited = mongoTemplate.exists(
+                    Query.query(Criteria.where("_id").is(cardId).and("likeMissionCreditedBy").is(profileId)),
+                    "cards"
+            );
+            if (!alreadyCredited) {
+                mongoTemplate.updateFirst(
+                        Query.query(Criteria.where("_id").is(cardId)),
+                        new Update().addToSet("likeMissionCreditedBy", profileId),
+                        "cards"
+                );
+                MissionService.MissionAndPrimeTimeResult missionResult = missionService.onCardLiked(profileId);
+                missionProgress = missionResult.mission();
+                primeTimeMissionProgress = missionResult.primeTime();
+            }
         }
 
-        return new CardLikeToggleResponse(!alreadyLiked, likeCount);
+        return new CardLikeToggleResponse(!alreadyLiked, likeCount, missionProgress, primeTimeMissionProgress);
     }
 
     /** Increments a card's shareCount by 1 — ported from the old Next.js reference
@@ -692,7 +718,7 @@ public class CardService {
      * (ShareDialog.tsx). $inc + returnNew in one round trip, unlike toggleLike's own
      * update-then-findOne — there's no derived state to recompute here (unlike likeCount,
      * which comes from the `likes` array's own length), just the counter itself. */
-    public CardShareResponse recordCardShare(ObjectId cardId) {
+    public CardShareResponse recordCardShare(ObjectId cardId, ObjectId sharerProfileId) {
         Document result = mongoTemplate.findAndModify(
                 Query.query(Criteria.where("_id").is(cardId)),
                 new Update().inc("shareCount", 1),
@@ -700,7 +726,19 @@ public class CardService {
                 Document.class, "cards"
         );
         int shareCount = result != null ? result.getInteger("shareCount", 0) : 0;
-        return new CardShareResponse(shareCount);
+
+        // SHARE_CARD mission credit — unlike LIKE_CARDS there's no anti-farming dedup here,
+        // matching the reference exactly (every successful share call increments progress,
+        // no per-card credited-once guard).
+        IncrementMissionResult missionProgress = null;
+        IncrementMissionResult primeTimeMissionProgress = null;
+        if (sharerProfileId != null) {
+            MissionService.MissionAndPrimeTimeResult missionResult = missionService.onCardShared(sharerProfileId);
+            missionProgress = missionResult.mission();
+            primeTimeMissionProgress = missionResult.primeTime();
+        }
+
+        return new CardShareResponse(shareCount, missionProgress, primeTimeMissionProgress);
     }
 
     /** Records a card view in the CardView collection — see CardView's own doc comment for
@@ -865,15 +903,32 @@ public class CardService {
 
         Card saved = cardRepository.save(card);
 
+        IncrementMissionResult createCardMissionProgress = null;
+        IncrementMissionResult create3CardsMissionProgress = null;
+        IncrementMissionResult primeTimeMissionProgress = null;
         if (isNewCard) {
             mongoTemplate.updateFirst(
                     Query.query(Criteria.where("_id").is(activeProfileId)),
                     new Update().push("cards", new ObjectId(saved.getId())),
                     "profiles"
             );
+
+            // CREATE_CARD/CREATE_3_CARDS mission credit — this is the actual "card created"
+            // moment in the common case, not publishCard below: a brand-new card saved from
+            // the regular editor defaults isReadyToPublish to true (see this same method's
+            // own field assignment above), so most cards are "published" right here. A card
+            // deliberately saved as a draft (isReadyToPublish: false, e.g. the Shortcut
+            // feature) is credited later instead, when it's actually published via
+            // publishCard — never both, since a card is only ever "new" once.
+            if (Boolean.TRUE.equals(saved.getIsReadyToPublish())) {
+                MissionService.CreateCardMissionResult missionResult = missionService.onCardPublished(activeProfileId);
+                createCardMissionProgress = missionResult.createCard();
+                create3CardsMissionProgress = missionResult.create3Cards();
+                primeTimeMissionProgress = missionResult.primeTime();
+            }
         }
 
-        return new SaveCardResponse(saved.getId());
+        return new SaveCardResponse(saved.getId(), createCardMissionProgress, create3CardsMissionProgress, primeTimeMissionProgress);
     }
 
     /**
@@ -914,7 +969,7 @@ public class CardService {
      * feature) to published. Same creator-or-FLEXADMIN authorization every other card
      * mutation here uses; CardDetailScreen.tsx's own "Publish" button is gated stricter
      * (creator only, no admin bypass) purely in the UI, not because the backend forbids it. */
-    public void publishCard(String memberId, String cardId) {
+    public PublishCardResponse publishCard(String memberId, String cardId) {
         if (!ObjectId.isValid(cardId)) {
             throw new RuntimeException("Invalid cardId");
         }
@@ -928,6 +983,9 @@ public class CardService {
                 new Update().set("isReadyToPublish", true),
                 "cards"
         );
+
+        MissionService.CreateCardMissionResult missionResult = missionService.onCardPublished(requesterProfileId);
+        return new PublishCardResponse(missionResult.createCard(), missionResult.create3Cards(), missionResult.primeTime());
     }
 
     /**

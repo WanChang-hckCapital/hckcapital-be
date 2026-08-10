@@ -25,4 +25,9 @@ public class SignUpRequest {
     /** Confirm-password matching is a client-side-only check in the reference app too — this
      * backend never receives or compares it, same as that app's own createUser server
      * action signature (email, username, password, refCode — no confirmPassword param). */
+
+    /** Optional — see AuthService.signup's own doc comment for the redemption logic this
+     * feeds. An unknown/invalid code (no Profile.referralCode match) is silently ignored,
+     * same as the reference's own createUser (logs a warning, doesn't fail the signup). */
+    private String refCode;
 }

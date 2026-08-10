@@ -66,7 +66,7 @@ public class AuthController {
     @PostMapping("/signup")
     public ResponseEntity<?> signup(@Valid @RequestBody SignUpRequest request) {
         try {
-            LoginResponse response = authService.signup(request.getEmail(), request.getUsername(), request.getPassword());
+            LoginResponse response = authService.signup(request.getEmail(), request.getUsername(), request.getPassword(), request.getRefCode());
             return ResponseEntity.ok(response);
         } catch (RuntimeException e) {
             return ResponseEntity.status(400).body(Map.of("error", e.getMessage()));
