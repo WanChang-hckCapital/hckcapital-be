@@ -34,7 +34,7 @@ public class AuthController {
     @PostMapping("/google")
     public ResponseEntity<?> loginWithGoogle(@Valid @RequestBody GoogleLoginRequest request) {
         try {
-            LoginResponse response = authService.loginWithGoogle(request.getIdToken());
+            LoginResponse response = authService.loginWithGoogle(request.getIdToken(), request.getRefCode());
             return ResponseEntity.ok(response);
         } catch (RuntimeException e) {
             return ResponseEntity.status(401).body(Map.of("error", e.getMessage()));

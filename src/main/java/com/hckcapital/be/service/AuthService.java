@@ -113,14 +113,18 @@ public class AuthService {
 
     /** Verifies the ID token the RN app's own Google Sign-In flow (see
      * useGoogleSignIn.ts) returns, then finds-or-creates the Member/Profile behind that
-     * email — mirroring the old Next.js reference's own createOAuthUser, minus the referral
-     * system (never ported to this backend at all, see Profile.referralCode's own doc
-     * comment) and minus the reference's own bubblePoint/onboarding-bonus bookkeeping
-     * (out of scope here — this only needs to authenticate the user, same as any other
-     * login). A brand-new account created this way starts unonboarded (onboarded: false),
+     * email — mirroring the old Next.js reference's own createOAuthUser, including its
+     * referral handling: `refCode` (see GoogleLoginRequest.getRefCode's own doc comment) is
+     * only ever applied on the branch that creates a brand-new Profile, same as the
+     * reference's own signIn callback passes its `pending_ref` cookie value into
+     * createOAuthUser unconditionally — createOAuthUser's own existing-user guard is what
+     * actually makes it a no-op on a returning user, not a check here. The reward payout
+     * itself still doesn't happen until the referee completes onboarding (see
+     * ProfileService.completeOnboarding), exactly the same as the email/password signup
+     * path. A brand-new account created this way starts unonboarded (onboarded: false),
      * same as a fresh email/password signup would, and has no password set — attempting a
      * regular email/password login on it will correctly fail until one is set. */
-    public LoginResponse loginWithGoogle(String idToken) {
+    public LoginResponse loginWithGoogle(String idToken, String refCode) {
         if (googleIdTokenVerifier == null) {
             throw new RuntimeException("Google Sign-In is not configured on this server");
         }
@@ -147,13 +151,13 @@ public class AuthService {
             throw new RuntimeException("This account has been deleted");
         }
         if (member == null) {
-            member = createMemberAndProfileForGoogle(email, name);
+            member = createMemberAndProfileForGoogle(email, name, refCode);
         }
 
         return buildLoginResponse(member);
     }
 
-    private Member createMemberAndProfileForGoogle(String email, String name) {
+    private Member createMemberAndProfileForGoogle(String email, String name, String refCode) {
         Profile profile = new Profile();
         profile.setEmail(email);
         // Falls back to the email's local part when Google doesn't return a display name
@@ -162,7 +166,13 @@ public class AuthService {
         profile.setAccountname(name != null && !name.isBlank() ? name : email.substring(0, email.indexOf('@')));
         profile.setUsertype("PERSONAL");
         profile.setOnboarded(false);
+        profile.setBubblePoint(0);
+        profile.setReferralCode(generateReferralCode());
         Profile savedProfile = profileRepository.save(profile);
+
+        if (refCode != null && !refCode.isBlank()) {
+            applyReferralCode(refCode.trim(), savedProfile);
+        }
 
         Member member = new Member();
         member.setEmail(email);
@@ -238,9 +248,10 @@ public class AuthService {
 
     /** See signup's own doc comment — writes the "uncompleted" ReferralHistory row a
      * successful onboarding later flips to "completed" (ProfileService.completeOnboarding).
-     * Package-private-equivalent (private) since it's only ever reached from signup here,
-     * same as the reference keeps this logic inline in createUser/createOAuthUser rather
-     * than as its own exported action. */
+     * Shared by both new-account paths that can carry a refCode (email/password signup and
+     * createMemberAndProfileForGoogle), same as the reference keeps this logic duplicated
+     * inline in both createUser and createOAuthUser rather than as its own exported
+     * action. */
     private void applyReferralCode(String refCode, Profile referee) {
         Profile referrer = profileRepository.findByReferralCode(refCode).orElse(null);
         if (referrer == null) {
